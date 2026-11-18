@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""basic_scrub.py - Demonstrating deterministic privacy scrubbing before sending prompts to LLMs.
+
+This example illustrates:
+1. Scrubbing sensitive credentials (OpenAI/AWS keys, private IPs, MAC addresses, emails, paths).
+2. Receiving an audit report containing counts and categories (never leaking actual values).
+3. Using RelayMap to safely restore benign paths/hosts on reply, while permanently redacting credentials.
+"""
+
+from relayscrub import scrub_outbound, scrub_with_map, restore_inbound, RelayMap
+
+
+def main():
+    print("=== RelayScrub: Basic Outbound Privacy Scrubbing Demo ===\n")
+
+    sample_prompt = """
+    Please help debug this script running on worker-node-01.
+    Database configuration:
+    - Host: 192.168.1.45 (internal interface: 00:00:00:00:00:00)
+    - Admin email: security-admin@internal-corp.test
+    - Config file: /Users/alice/projects/backend/config.json
+    - AWS S3 backup bucket access key: AKIAIOSFODNN7EXAMPLE
+    - OpenAI translation key: sk-live998234abcfed0192837465019283
+    - Database password: pass=SuperSecretPassword123!
+
+    Error log:
+    Connection timed out while connecting to 10.0.0.12:5432 from /home/deploy/.pgpass.
+    """
+
+    print("--- 1. Original Unscrubbed Prompt ---")
+    print(sample_prompt.strip())
+    print()
+
+    # Create a local, in-memory RelayMap for reversible identifiers
+    relay_map = RelayMap()
+
+    # Perform deterministic outbound scrubbing
+    clean_text, report = scrub_outbound(sample_prompt, mapping=relay_map)
+
+    print("--- 2. Scrubbed Prompt (Safe for External LLM API) ---")
+    if clean_text is not None and report["ok"]:
+        print(clean_text.strip())
+    else:
+        print(f"[BLOCKED] Scrubbing failed closed: {report.get('reason')}")
+        return
+
+    print("\n--- 3. Redaction Audit Report (Safe for Logging) ---")
+    print(f"Status: OK = {report['ok']}")
+    print(f"Redaction Counts: {report['counts']}")
+    print(f"Total Redacted Items: {report['total']}")
+    print(f"Placeholders Escaped: {report['placeholders_escaped']}")
+    print("Note: The report contains ONLY counts and category tags - never raw secrets.")
+
+    print("\n--- 4. Simulated LLM Response with Reversible Restoration ---")
+    simulated_llm_reply = (
+        "Based on your configuration, the timeout connecting to <IP-1> indicates "
+        "that firewall rules on <IP-2> may be blocking port 5432. "
+        "Check permissions on file <PATH-1> and <PATH-2>."
+    )
+    print("LLM Response Received:")
+    print(simulated_llm_reply)
+
+    restored_reply = restore_inbound(simulated_llm_reply, relay_map)
+    print("\nRestored Response (Benign paths restored, secrets/IPs preserved as placeholders):")
+    print(restored_reply)
+    print("\nNotice that paths (/Users/alice/... and /home/deploy/...) were restored,")
+    print("while IP addresses, passwords, and API keys remain safe placeholders.")
+
+
+if __name__ == "__main__":
+    main()

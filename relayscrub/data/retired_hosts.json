@@ -1,0 +1,13 @@
+{
+  "schema": "relayscrub.retired-hosts.v1",
+  "purpose": "Retired hosts to scrub from outbound prompts.",
+  "hosts": [
+    {
+      "host": "legacy-box",
+      "aliases": [
+        "old-ironbox"
+      ],
+      "callsign": "DECOMMISSIONED"
+    }
+  ]
+}
