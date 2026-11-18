@@ -1,52 +1,71 @@
-# ==============================================================================
-# Program: scrub.py
-# Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
-# Last Modified: November 18, 2026
-# Purpose: Pure Standard Library Deterministic Privacy Scrubber & Restorer.
-#          Scrubs sensitive credentials, cloud API keys, private IPv4/IPv6 addresses,
-#          MAC hardware addresses, user filesystem paths, emails, and hostnames
-#          prior to outbound transmission to external LLMs.
-#          Key Technical Features:
-#            1. Unicode NFKD normalization & homoglyph / confusable folding
-#            2. Multi-token credential regex engines (AWS, OpenAI, GitHub, Slack, JWT, SSH)
-#            3. Network identifier detection (RFC 1918, Cisco/ARP MACs, base64 MACs)
-#            4. Reversible placeholder mapping (<HOST-n>, <PATH-n>) via RelayMap
-#            5. Fail-closed double-verification barrier (withholds output on leakage)
-# ==============================================================================
+# Program: relayscrub - scrub.py
+# Programmer: Ethan-da-Tech-Wizard (written with Claude, an AI assistant)
+# Last Modified: 2026-11-18
+# Purpose: Scrubs private data (secrets, private IPs, MACs, emails, home paths, host names) out of text before it is sent to an outside AI, and can swap harmless host/path placeholders back afterwards; it fails closed (returns nothing) if a second check still finds something.
 
+"""Deterministic, standard-library-only privacy scrubber and restorer.
+
+Scrubs sensitive credentials, cloud API keys, private IPv4/IPv6 addresses, MAC
+addresses, user filesystem paths, emails and host names before text is sent to
+an external LLM. Key features:
+  1. Unicode NFKD normalisation and look-alike (confusable) folding
+  2. Regex engines for AWS, OpenAI, GitHub, Slack, JWT and SSH style secrets
+  3. Network identifier detection (private ranges, Cisco/ARP/base64 MACs)
+  4. Reversible placeholders (<HOST-n>, <PATH-n>) through RelayMap
+  5. A fail-closed double-verification step that withholds output on any leak
+"""
+
+# Lets type hints be written as plain text and evaluated lazily (no effect on behaviour).
 from __future__ import annotations
 
+# Standard-library modules only: no third-party packages are needed.
+# base64/binascii/codecs decode hidden (encoded) copies of secrets; html/urllib.parse undo escaping.
 import base64
 import binascii
 import codecs
 import html
+# json reads the data files; os/sys handle environment, files and the command line.
 import json
 import os
+# re = regular expressions, the main tool for finding patterns in text.
 import re
 import sys
+# unicodedata lets us fold look-alike characters and drop invisible ones.
 import unicodedata
 import urllib.parse
+# Path is the modern way to build file paths; typing names are only type hints.
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+# Work out where the data folder (known host names etc.) lives: next to this file by default.
 SELF = Path(__file__).resolve()
+# First choice: a data folder beside this module (the installed-package layout).
 DEFAULT_DATA_DIR = SELF.parent / "data"
+# Fallback: a data folder one level up (a source-checkout layout).
 if not DEFAULT_DATA_DIR.exists() and (SELF.parent.parent / "data").exists():
     DEFAULT_DATA_DIR = SELF.parent.parent / "data"
+# The RELAYSCRUB_DATA_DIR environment variable can override where the data files are read from.
 DATA_DIR = Path(os.environ.get("RELAYSCRUB_DATA_DIR", DEFAULT_DATA_DIR))
 
+# Refuse inputs longer than this many characters (a safety limit so scanning stays fast).
 MAX_INPUT = 2_000_000
+# Only these categories may be put back later; secrets, IPs, MACs and emails never are.
 RESTORABLE = ("HOST", "PATH")
+# All placeholder categories; when two matches overlap, the earlier one in this list wins.
 CATS = ("SECRET", "EMAIL", "PATH", "MAC", "IP", "HOST", "ID")  # merge priority, high -> low
+# Patterns that recognise our own placeholders such as <HOST-3>.
+# PH_ESC_RX matches the opening '<' of one so a forged placeholder in the input can be defused.
 PH_RX = re.compile(r"<(?:MAC|HOST|IP|SECRET|EMAIL|PATH|ID)-\d+>")
 PH_ESC_RX = re.compile(r"<(?=(?:MAC|HOST|IP|SECRET|EMAIL|PATH|ID)-\d+>)", re.I)
 PH_FULL = re.compile(r"<(?:MAC|HOST|IP|SECRET|EMAIL|PATH|ID)-\d+>", re.I)
 
+# Names of Linux distributions. These double as ordinary words, so they only count as host names
+# when written in lowercase or when the nearby words (HOST_CONTEXT) suggest a machine.
 DISTRO_WORDS = {
     "fedora", "ubuntu", "debian", "arch", "centos", "rhel", "alpine", "mint", "kali", "nixos",
     "suse", "opensuse", "gentoo", "manjaro", "popos", "rocky", "almalinux"
 }
+# Words near a name (ssh, node, server, @ ...) that hint it is a machine name, not an ordinary word.
 HOST_CONTEXT = re.compile(
     r"(?i)(ssh|scp|sftp|rsync|ping|host|hostname|machine|\bbox\b|node|server|\bvm\b|laptop|"
     r"@|\.local|\bnamed\b|\bcalled\b|fleet|peer|\bon the\b)"
@@ -59,6 +78,8 @@ class ScrubError(Exception):
 
 
 # --------------------------------------------------------------------------- normalisation
+# Confusable folding: _CONF_SRC holds look-alike characters (Cyrillic, Greek, etc.) and _CONF_DST holds
+# the plain ASCII letters they imitate, in the same order.
 _CONF_SRC = (
     "аеорсху" "іјѕӏһԁԛԝɡɑ" "οανρικτυχϲ" "ոօս"
     "АВЕКМНОРСТХ" "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ" "ʼ’‘ˈ"
@@ -67,7 +88,9 @@ _CONF_DST = (
     "aeopcxy" "ijsl" "hdqwga" "oavpiktuxc" "nou"
     "ABEKMHOPCTX" "ABEZHIKMNOPTYX" "''''"
 )
+# Build a lookup table: look-alike character -> ASCII character.
 CONF = dict(zip(_CONF_SRC, _CONF_DST))
+# Fancy dashes, colons, dots, slashes and at-signs also fold to their ASCII versions.
 CONF.update({c: "-" for c in "‐‑‒–—―−⁃﹘﹣－֊־"})
 CONF.update({c: ":" for c in "꞉ː∶։：ⴀ".replace("ⴀ", "")})
 CONF.update({c: "." for c in "․‧。．﹒܁܂"})
@@ -100,6 +123,7 @@ def normalise(text: str) -> Tuple[str, List[int]]:
     idx: List[int] = []
     n_text = len(text)
 
+    # Each kept character is appended to `out`, and `idx` remembers where it came from in the original text.
     # Step 1: Iterate over raw characters
     for i, ch in enumerate(text):
         # Step 1a: Handle JSON-escaped forward slashes: "\/Users\/x" -> "/Users/x"
@@ -132,11 +156,15 @@ def normalise(text: str) -> Tuple[str, List[int]]:
 
 
 # --------------------------------------------------------------------------- data files
+# Turn a name into a canonical lowercase form where runs of -, _, space and ' become a single '-'.
 def _norm_name(v: str) -> str:
+    """Return a canonical lowercase form of a host name (runs of - _ space ' become one '-')."""
     return re.sub(r"[-_\s']+", "-", v.strip().lower())
 
 
+# Read a JSON data file; any problem is re-raised as ScrubError so the caller fails closed.
 def _read_json(path: Path):
+    """Read and parse a JSON file; raise ScrubError (without echoing file contents) on any failure."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -145,13 +173,17 @@ def _read_json(path: Path):
 
 def load_names(data_dir: Path) -> Tuple[List[str], List[str]]:
     """(host names, literals). Any of the three files missing/corrupt, or zero hosts -> ScrubError (fail closed)."""
+    # `hosts` collects every host name/alias/callsign; `literals` collects exact private strings to hide.
     hosts: set = set()
     literals: set = set()
 
+    # Helper: keep only strings with at least 3 characters, stored in normalised form.
     def add(v):
+        """Add a name to the host set if it is a string of at least 3 characters."""
         if isinstance(v, str) and len(v.strip()) >= 3:
             hosts.add(_norm_name(v))
 
+    # File 1: explicit host names and literal strings to redact.
     red = _read_json(data_dir / "public_release_redactions.json")
     if not isinstance(red, dict):
         raise ScrubError("redactions file has wrong shape")
@@ -160,6 +192,7 @@ def load_names(data_dir: Path) -> Tuple[List[str], List[str]]:
     for x in red.get("literals", []) if isinstance(red.get("literals"), list) else []:
         if isinstance(x, str) and x.strip():
             literals.add(x.strip())
+    # File 2: fleet machines, each with optional aliases and a callsign.
     fr = _read_json(data_dir / "fleet_roles.json")
     if not isinstance(fr, dict) or not isinstance(fr.get("hosts"), dict):
         raise ScrubError("fleet_roles file has wrong shape")
@@ -169,6 +202,7 @@ def load_names(data_dir: Path) -> Tuple[List[str], List[str]]:
             for a in v.get("aliases", []) if isinstance(v.get("aliases"), list) else []:
                 add(a)
             add(v.get("callsign"))
+    # File 3: retired machines (entries may be dicts or plain strings).
     rh = _read_json(data_dir / "retired_hosts.json")
     if not isinstance(rh, dict) or not isinstance(rh.get("hosts"), list):
         raise ScrubError("retired_hosts file has wrong shape")
@@ -180,19 +214,25 @@ def load_names(data_dir: Path) -> Tuple[List[str], List[str]]:
             add(v.get("callsign"))
         else:
             add(v)
+    # An empty host list would silently disable host scrubbing, so it is treated as an error.
     if not hosts:
         raise ScrubError("no host names loaded")
+    # Longest names first so a long name is matched before any shorter name inside it.
     return sorted(hosts, key=lambda s: (-len(s), s)), sorted(literals, key=lambda s: (-len(s), s))
 
 
 def _name_rx(name: str) -> "re.Pattern[str]":
+    """Build a case-insensitive regex that matches a host name with flexible separators and optional possessive 's'."""
+    # Split the name into word pieces; the pattern below lets any of - _ or space sit between them.
     toks = [t for t in re.split(r"[-_\s']+", name) if t]
     parts = []
     for t in toks:
+        # A trailing 's' may be a possessive (Bob's), so allow an optional apostrophe before it.
         if len(t) > 3 and t.endswith("s") and t.isalpha():
             parts.append(re.escape(t[:-1]) + "'?s")
         else:
             parts.append(re.escape(t))
+    # The lookbehind/lookahead make sure the name is not just part of a longer word.
     return re.compile(r"(?<![a-z0-9])" + r"[-_\s]*".join(parts) + r"(?![a-z0-9])", re.I)
 
 
@@ -219,79 +259,119 @@ def _name_rx(name: str) -> "re.Pattern[str]":
 #       * -----BEGIN ... KEY-----: OpenSSH and RSA/ECDSA private key blocks
 # ==============================================================================
 
+# Small building blocks used to assemble the larger patterns below.
 HEX = "[0-9a-f]"
 MAC_SEP = r"(?:\s*[:\-]\s*|[ \t]+|\r?\n)"
+# Standard MAC address: 6-8 hex pairs separated by colon, dash, space/tab or newline.
 MAC_RX = re.compile(r"(?<!%s)%s{2}(?:%s%s{2}){5,7}(?!%s)" % (HEX, HEX, MAC_SEP, HEX, HEX), re.I)
+# Cisco style MAC: three groups of four hex digits separated by dots.
 MAC_CISCO = re.compile(r"(?<!%s)%s{4}(?:\s*\.\s*%s{4}){2}(?!%s)" % (HEX, HEX, HEX, HEX), re.I)
+# A bare run of exactly 12 hex digits with no separators.
 MAC_RUN = re.compile(r"(?<!%s)%s{12}(?!%s)" % (HEX, HEX, HEX), re.I)
+# Bonjour style names: a short device name followed by the .local suffix.
 LOCAL_RX = re.compile(r"(?i)(?<![a-z0-9-])[a-z0-9][a-z0-9-]{1,40}\.local(?![a-z0-9-])")
+# _PTAIL matches the rest of a path after the first folder (more /segments).
 _PTAIL = r"(?:/[^\s\\'\"<>;,)\]}|]*)*"
+# Home-style paths: /Users, /home, /srv, /Volumes ..., Windows C:\Users, ~name/, and 'users then name' spoken forms.
 HOME_RX = re.compile(
     r"(?i)(?:/Users|/home|/srv|/Volumes|/mnt|/media|/root)/[ \t]{0,3}[^\s/\\'\"<>:;,)\]}|]+" + _PTAIL
     + r"|(?<![A-Za-z0-9])[A-Z]:\\Users\\[^\s/\\'\"<>:;,)\]}|]+(?:\\[^\s\\'\"<>;,)\]}|]*)*"
     + r"|(?<![\w~])~[A-Za-z_][\w.\-]*(?=/)" + _PTAIL
     + r"|\busers[ \t]+(?:then|slash|and then|->)[ \t]+[\w.\-]+"
 )
+# A simple email shape: name@domain.
 EMAIL_RX = re.compile(r"[A-Za-z0-9._%+\-]{1,128}@[A-Za-z0-9][A-Za-z0-9.\-]{0,255}")
+# A dot, or an obfuscated dot written as [.] or (.).
 DOT = r"(?:\.|[\[\(]\.[\]\)])"
+# Four numbers separated by dots; the code later checks they are in private ranges.
 IPV4_RX = re.compile(r"(?<![\d.])(\d{1,3})%s(\d{1,3})%s(\d{1,3})%s(\d{1,3})(?!\d)" % (DOT, DOT, DOT))
+# IPv6 link-local (fe80::/10) and unique-local (fc00::/7) addresses.
 IPV6_RX = re.compile(r"(?i)(?<![0-9a-f:])(?:fe[89ab][0-9a-f]|f[cd][0-9a-f]{2})(?::[0-9a-f]{0,4}){2,7}(?![0-9a-f:])")
+# Key/value secrets such as password=..., token: ..., 'api key is ...'; group 'v' is the value part.
 KV_RX = re.compile(
     r"(?i)(?<![a-z0-9])(?:password|passwd|passphrase|pwd|pw|pass|secret|token|api[_\- ]?key|apikey|"
     r"access[_\- ]?key|private[_\- ]?key|auth|credential|credentials)[\"']?"
     r"(?:[ \t]*[:=][ \t]*|[ \t]+(?:is|was)[ \t]+)"
     r"(?P<v>\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']\S*)"
 )
+# Ready-made patterns for well-known secret shapes. Each match is replaced as a SECRET.
 SECRET_RES = [
+    # PEM blocks (private keys, certificates), even if the END line is missing.
     re.compile(r"-----BEGIN [A-Z0-9 ]+-----.*?(?:-----END [A-Z0-9 ]+-----|$)", re.S),
+    # HTTP 'Bearer <token>' values.
     re.compile(r"(?i)\bBearer[ \t]+\S{8,}"),
+    # OpenAI style keys that start with sk-.
     re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{10,}"),
+    # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained github_pat_ tokens.
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    # AWS access key IDs.
     re.compile(r"AKIA[0-9A-Z]{16}"),
+    # Google API keys.
     re.compile(r"AIza[0-9A-Za-z_\-]{30,}"),
+    # Slack tokens.
     re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"),
+    # JSON Web Tokens (three dot-separated base64 parts starting eyJ).
     re.compile(r"eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"),
+    # SSH public key lines.
     re.compile(r"(?:ssh-(?:rsa|ed25519|dss)|ecdsa-sha2-\S+|sk-ssh-\S+)[ \t]+AAAA[A-Za-z0-9+/=]+"),
+    # URLs with embedded credentials (scheme://user:password@).
     re.compile(r"(?i)(?<![a-z0-9+.\-])[a-z][a-z0-9+.\-]{0,30}://[^\s/:@]{1,128}:[^\s/@]{1,256}@"),
+    # Long hexadecimal strings (hashes / keys), 32 characters or more.
     re.compile(r"(?<![0-9A-Za-z])[0-9a-fA-F]{32,}(?![0-9A-Za-z])"),
     # leading part of a known key shape followed by an ellipsis
     re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_|github_pat_|sk-|AKIA|AIza|xox[abprs]-|eyJ)[A-Za-z0-9_\-]{4,64}(?:\.{2,}|\u2026)"),
 ]
+# Generic long token-like strings; _long_token_ok decides which ones look secret.
 LONG_TOKEN = re.compile(r"[A-Za-z0-9+/=_\-]{32,}")
+# Candidate base64 strings, single-line and multi-line, plus hex blobs; these get decoded and re-checked.
 B64_RX = re.compile(r"(?<![A-Za-z0-9+/_\-])[A-Za-z0-9+/_\-]{8,}={0,6}")
 B64_MULTI = re.compile(r"(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/=]{16,}[ \t]*\r?\n[ \t]*)+[A-Za-z0-9+/=]{4,}")
 HEXBLOB = re.compile(r"(?<![0-9a-f])(?:[0-9a-f]{2}){4,}(?![0-9a-f])", re.I)
 
 
+# Decide whether a long token looks like a secret rather than a readable slug.
 def _long_token_ok(tok: str) -> bool:
+    """Return True if a long token looks like a random secret (has digits and mixed case or symbols) rather than a readable slug."""
+    # Tokens with no digit at all are treated as readable words.
     if not any(c.isdigit() for c in tok):
         return False
+    # Very long tokens without slashes (not file paths) are assumed secret.
     if len(tok) >= 40 and "/" not in tok:
         return True
     return (any(c.isupper() for c in tok) and any(c.islower() for c in tok)) or any(c in "+=" for c in tok)
 
 
+# True when the first two octets (a.b) fall in a private/internal range.
 def _private_ipv4(a: int, b: int) -> bool:
+    """Return True if the first two IPv4 octets are in a private, link-local or shared address range."""
     return (
         a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
         or (a == 169 and b == 254) or (a == 100 and 64 <= b <= 127)
     )
 
 
+# Fraction of characters that are printable text; used to judge if decoded bytes are real text.
 def _printable_ratio(s: str) -> float:
+    """Return the fraction of characters in s that are printable text (0.0 for an empty string)."""
     return sum(1 for c in s if c.isprintable() or c in "\n\t\r") / len(s) if s else 0.0
 
 
+# Try several decodings (base64, URL-safe base64, base32, hex) and return every result that works.
 def _decode_candidates(tok: str):
+    """Return a list of byte strings from trying base64, URL-safe base64, base32 and hex decoding on a token."""
+    # Remove whitespace first (encoded blobs may be wrapped over lines).
     t = re.sub(r"\s+", "", tok)
     yield_list = []
+    # Try standard base64 and the URL-safe variant.
     for alt in (t, t.replace("-", "+").replace("_", "/")):
+        # base64 needs its length to be a multiple of 4, so add '=' padding.
         pad = alt + "=" * (-len(alt) % 4)
         try:
             yield_list.append(base64.b64decode(pad, validate=False))
         except (binascii.Error, ValueError):
             pass
+    # base32 uses upper-case A-Z and 2-7.
     t32 = t.rstrip("=").upper()
     if re.fullmatch(r"[A-Z2-7]{8,}", t32):
         try:
@@ -306,10 +386,13 @@ def _decode_candidates(tok: str):
     return yield_list
 
 
+# A Span is one detection: where it starts/ends in the normalised text, its category and a dedupe key.
 Span = Tuple[int, int, str, str]  # (start, end) in view coordinates, category, key
 
+# UUIDs such as 123e4567-e89b-12d3-a456-426614174000 (UUID_J is the same without boundary checks).
 UUID_RX = re.compile(r"(?i)(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9a-f])")
 UUID_J = re.compile(r"(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# Key prefixes searched for in 'joined' variants of the text (spaces/quotes removed, reversed, rot13) to catch split-up keys.
 PREFIX_RES = [
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,36}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,60}"),
@@ -319,55 +402,75 @@ PREFIX_RES = [
     re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,60}"),
     re.compile(r"eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*"),
 ]
+# Translation tables: characters mapped to None are deleted, gluing split-up strings back together.
 JOIN_DROP = dict.fromkeys(map(ord, " \t\r\n\"'`+|*>,\\"), None)
 JOIN_DROP2 = dict(JOIN_DROP)
 JOIN_DROP2.update(dict.fromkeys(map(ord, ":{}[]=-;()"), None))
+# ROT13 maps each letter 13 places along the alphabet (a table for str.translate).
 ROT13 = {}
 for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
     ROT13[ord(_c)] = "abcdefghijklmnopqrstuvwxyz"[(_i + 13) % 26]
     ROT13[ord(_c.upper())] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[(_i + 13) % 26]
 
+# 'Leetspeak' tables: digits that stand in for letters (4->a, 3->e ...). Two variants differ on 1 -> i or l.
 LEET_I = str.maketrans("4301578", "aeoistb")
 LEET_L = str.maketrans("4301578", "aeolstb")
+# ROT47 rotates all printable ASCII characters by 47.
 ROT47 = {c: chr(33 + ((c - 33 + 47) % 94)) for c in range(33, 127)}
+# Obfuscated IP pieces: an octet may be decimal or hex, and separators may be spelled out (dot, commas...).
 _OCT = r"(?:0x[0-9a-f]{1,2}|\d{1,3})"
 _SEPI = r"(?:[ \t\r\n]{0,3}\.[ \t\r\n]{0,3}|,|-|[ \t]+dot[ \t]+|[\[\(]\.[\]\)])"
+# Obfuscated dotted IP; IPX_PARTS splits it into its numbers.
 IPX_RX = re.compile(r"(?i)(?<![\w.])(%s)(?:%s(%s)){3}(?![\w])" % (_OCT, _SEPI, _OCT))
 IPX_PARTS = re.compile(r"(?i)0x[0-9a-f]{1,2}|\d{1,3}")
+# IPs written as one hex number (0x0a000001), one decimal integer, or an IPv4-mapped IPv6 address.
 IP_HEXINT = re.compile(r"(?i)(?<![\w.])0x([0-9a-f]{8})(?![\w])")
 IP_DECINT = re.compile(r"(?<![\w.\-])(\d{8,10})(?![\w])")
 IP_MAPPED = re.compile(r"(?i)(?<![0-9a-f:])::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})(?![0-9a-f:])")
+# Emails written out as 'name [at] host dot com'; EMAIL_AT_BR spots the bracket/dot words.
 EMAIL_AT = re.compile(
     r"(?i)(?<![\w.+\-])[\w.+\-]{1,64}[ \t]{0,3}(?:[\[\(\{<]at[\]\)\}>]|[ \t]at[ \t])[ \t]{0,3}[\w\-]{1,63}"
     r"(?:[ \t]{0,3}(?:\.|[\[\(\{<]dot[\]\)\}>]|[ \t]dot[ \t])[ \t]{0,3}[\w\-]{1,63})+"
 )
 EMAIL_AT_BR = re.compile(r"(?i)[\[\(\{<]at[\]\)\}>]|[\[\(\{<]dot[\]\)\}>]|\sdot\s")
+# name = value assignments (n = name, v = value), checked later for secret-looking names.
 ASSIGN_RX = re.compile(
     r"(?<![A-Za-z0-9_])(?P<n>[A-Za-z_][A-Za-z0-9_.\-]{0,60})[\"']?\s{0,40}[:=]\s{0,40}"
     r"(?P<v>\"[^\"\n]*\"|'[^'\n]*'|[^\s\"']\S*)"
 )
 ASSIGN_TAIL = re.compile(r"[ \t]+(\S+)")
+# Candidate tokens for the 'high entropy' check (mixed case, digits and symbols).
 ENT_RX = re.compile(r"[^\s\"'<>`|]{8,}")
+# A base64-encoded MAC (8 characters) that follows words like 'mac' or 'hwaddr'.
 B64_MAC_RX = re.compile(r"(?i)\b(?:mac|hwaddr|hw|ether|bssid|address)\b[^\n]{0,12}?(?<![A-Za-z0-9+/])([A-Za-z0-9+/]{8})(?![A-Za-z0-9+/=])")
 CHUNK_RX = re.compile(r"(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/=]{4,}[ \t]{1,2}){7,}[A-Za-z0-9+/=]{4,}")
+# ARP-style MACs where each byte may have one digit (e.g. 0:1a:2b:3:4:5).
 ARP_RX = re.compile(r"(?i)(?<![0-9a-z:\-])[0-9a-f]{1,2}(?:[:\-][0-9a-f]{1,2}){5}(?![0-9a-z])")
+# A MAC written as a single decimal integer after a label like 'mac'.
 MAC_INT_RX = re.compile(r"(?i)\b(?:mac|hwaddr|ether|bssid|address)\b[^\n]{0,24}?(?<![\w.])(\d{9,15})(?![\w.])")
 TOK_RX = re.compile(r"[0-9A-Za-z]+")
+# Words that mark a variable name as secret: whole-word list, small-parts set, and symbol/hex character sets.
 _KW_LONG = ("password", "passwd", "passphrase", "secret", "token", "apikey", "credential", "privatekey")
 _KW_PARTS = {"auth", "pass", "pw", "pwd", "key", "cred", "creds", "login", "pin", "passcode", "bearer"}
 _SYM = set("!@#$%^&*?~")
 _HEXC = set("0123456789abcdefABCDEF")
 
 
+# 'Boundary left': True if the character before position s is not a letter/digit.
 def _bl(v: str, s: int) -> bool:
+    """Return True if position s in v is at a left word boundary (start of text or previous char not alphanumeric)."""
     return s <= 0 or not v[s - 1].isalnum()
 
 
+# 'Boundary right': True if the character at position e is not a letter/digit.
 def _br(v: str, e: int) -> bool:
+    """Return True if position e in v is at a right word boundary (end of text or next char not alphanumeric)."""
     return e >= len(v) or not v[e].isalnum()
 
 
+# Does this variable name look like it holds a secret (password, token, ...key)?
 def _kw_name(n: str) -> bool:
+    """Return True if a variable name suggests it holds a secret (password, token, key, ...)."""
     ln = n.lower()
     flat = re.sub(r"[_.\-]", "", ln)
     if any(k in flat for k in _KW_LONG):
@@ -377,24 +480,32 @@ def _kw_name(n: str) -> bool:
     return any(p in _KW_PARTS for p in re.split(r"[_.\-]", ln))
 
 
+# For ENV_STYLE names: a value of 8+ characters with letters and digits and no slash looks like a secret.
 def _env_value_entropy(val: str) -> bool:
+    """Return True if an environment-style value looks random enough (letters and digits, 8+ chars, no slash) to hide."""
     return (len(val) >= 8 and "/" not in val and any(c.isdigit() for c in val) and any(c.isalpha() for c in val))
 
 
+# A token with upper, lower, digit AND a symbol character looks like a generated password.
 def _entropy_token(tok: str) -> bool:
+    """Return True if a token mixes upper case, lower case, digits and symbols, like a generated password."""
     if len(tok) < 8 or "/" in tok:
         return False
     return (any(c.isupper() for c in tok) and any(c.islower() for c in tok) and any(c.isdigit() for c in tok)
             and any(c in _SYM for c in tok))
 
 
+# Turn four numbers into 'a.b.c.d' if valid and private, otherwise None.
 def _ip_from_ints(o: List[int]) -> Optional[str]:
+    """Return 'a.b.c.d' if four numbers form a private IPv4 address, otherwise None."""
     if len(o) == 4 and all(0 <= x <= 255 for x in o) and _private_ipv4(o[0], o[1]):
         return ".".join(map(str, o))
     return None
 
 
+# Decode obfuscated IP pieces (decimal or 0x hex), also trying the reversed byte order.
 def _decode_ip_parts(parts: List[str]) -> Optional[str]:
+    """Decode obfuscated IP pieces (decimal or 0x hex, also reversed order) into a private IP string, or None."""
     o = [int(p, 16) if p.lower().startswith("0x") else int(p) for p in parts]
     r = _ip_from_ints(o)
     if r:
@@ -404,14 +515,20 @@ def _decode_ip_parts(parts: List[str]) -> Optional[str]:
     return None
 
 
+# True if a 32-bit integer is a private IPv4 address.
 def _int_private(n: int) -> bool:
+    """Return True if a 32-bit integer represents a private IPv4 address."""
     return _private_ipv4((n >> 24) & 255, (n >> 16) & 255) and n < (1 << 32)
 
 
 def _variant(text: str, drop=None, rev=False, rot=False) -> Tuple[str, List[int]]:
+    """Return (text, index) for a modified view of text: characters dropped, ROT13 applied and/or reversed; index maps back to the original."""
+    # Build a copy of the text with some characters removed (drop), optionally ROT13'd (rot) and reversed (rev),
+    # while idx keeps the original positions so matches can be mapped back.
     out: List[str] = []
     idx: List[int] = []
     for i, ch in enumerate(text):
+        # Skip characters in the drop table and non-alphanumeric non-ASCII characters.
         if drop is not None and (ord(ch) in drop or (ord(ch) > 127 and not ch.isalnum())):
             continue
         out.append(ch)
@@ -419,6 +536,7 @@ def _variant(text: str, drop=None, rev=False, rot=False) -> Tuple[str, List[int]
     s = "".join(out)
     if rot:
         s = s.translate(ROT13)
+    # Reverse the text AND its index list so positions still map back correctly.
     if rev:
         s = s[::-1]
         idx = idx[::-1]
@@ -426,6 +544,8 @@ def _variant(text: str, drop=None, rev=False, rot=False) -> Tuple[str, List[int]
 
 
 def _cover_index(spans: List[Span]):
+    """Merge the spans into sorted non-overlapping ranges and return (starts, ends) lists for fast lookup."""
+    # Sort the spans and merge overlapping ones into one list of (start, end) ranges.
     iv = sorted((s, e) for s, e, _, _ in spans)
     merged: List[List[int]] = []
     for s, e in iv:
@@ -437,6 +557,8 @@ def _cover_index(spans: List[Span]):
 
 
 def _covered(cov, pos: int) -> bool:
+    """Return True if position pos lies inside any merged span range from _cover_index."""
+    # Binary search the sorted range starts to see if pos lies inside a range.
     import bisect
     starts, ends = cov
     i = bisect.bisect_right(starts, pos) - 1
@@ -444,51 +566,70 @@ def _covered(cov, pos: int) -> bool:
 
 
 class Detector:
+    """Finds sensitive spans (hosts, secrets, IPs, MACs, emails, paths, IDs) in normalised text."""
     def __init__(self, hosts: Optional[Sequence[str]] = None, literals: Optional[Sequence[str]] = None):
+        """Pre-compile a name pattern for every host and literal."""
+        # Pre-compile one pattern per host name (and remember if it is a distro-style word).
         self.hosts = [(h, _name_rx(h), h in DISTRO_WORDS) for h in (hosts or [])]
         self.literals = [(l, _name_rx(l)) for l in (literals or [])]
 
     def find(self, v: str, depth: int = 0) -> List[Span]:
+        """Return a list of spans (start, end, category, key) for everything sensitive in v; depth counts nested decodes."""
+        # `sp` collects every detection (span) found in this text.
         sp: List[Span] = []
+        # MAC addresses (key = just the hex digits so different spellings share a placeholder).
         for rx in (MAC_RX, MAC_CISCO, MAC_RUN):
             for m in rx.finditer(v):
                 sp.append((m.start(), m.end(), "MAC", "mac:" + re.sub(r"[^0-9a-f]", "", m.group(0).lower())))
+        # Bonjour .local host names (localhost.local is ignored).
         for m in LOCAL_RX.finditer(v):
             if m.group(0).lower() != "localhost.local":
                 sp.append((m.start(), m.end(), "HOST", _norm_name(m.group(0))))
+        # Known host names from the data files; distro words only count when context says host.
         for name, rx, distro in self.hosts:
             for m in rx.finditer(v):
                 if distro and not self._distro_is_host(v, m):
                     continue
                 sp.append((m.start(), m.end(), "HOST", _norm_name(m.group(0))))
+        # Literal private strings from the data files.
         for lit, rx in self.literals:
             for m in rx.finditer(v):
                 sp.append((m.start(), m.end(), "ID", "id:" + _norm_name(m.group(0))))
+        # Home directory paths.
         for m in HOME_RX.finditer(v):
             sp.append((m.start(), m.end(), "PATH", "path:" + m.group(0).lower()))
+        # Email addresses.
         for m in EMAIL_RX.finditer(v):
             sp.append((m.start(), m.end(), "EMAIL", "email:" + m.group(0).lower()))
+        # IPv4 addresses, kept only if every octet is <= 255 and the address is private.
         for m in IPV4_RX.finditer(v):
             o = [int(g) for g in m.groups()]
             if all(x <= 255 for x in o) and _private_ipv4(o[0], o[1]):
                 sp.append((m.start(), m.end(), "IP", "ip:" + ".".join(map(str, o))))
+        # IPv6 link-local / unique-local addresses.
         for m in IPV6_RX.finditer(v):
             sp.append((m.start(), m.end(), "IP", "ip:" + m.group(0).lower()))
+        # UUIDs.
         for m in UUID_RX.finditer(v):
             sp.append((m.start(), m.end(), "ID", "uuid:" + re.sub(r"[^0-9a-f]", "", m.group(0).lower())))
+        # password=... style pairs; skip values that are already placeholders.
         for m in KV_RX.finditer(v):
             val = m.group("v").strip("\"'")
             if PH_FULL.fullmatch(val):
                 continue
             sp.append((m.start(), m.end(), "SECRET", "sec:" + m.group(0)))
+        # Well-known secret shapes.
         for rx in SECRET_RES:
             for m in rx.finditer(v):
                 sp.append((m.start(), m.end(), "SECRET", "sec:" + m.group(0)))
+        # Long token-like strings that look random.
         for m in LONG_TOKEN.finditer(v):
             if _long_token_ok(m.group(0)):
                 sp.append((m.start(), m.end(), "SECRET", "sec:" + m.group(0)))
+        # Extra, costlier checks run only on the top-level text, not on decoded copies.
         if depth == 0:
             sp.extend(self._extra(v, sp))
+        # Look inside base64/hex blobs, up to 3 levels of nesting, to catch encoded secrets.
         if depth < 3:
             for rx in (B64_RX, B64_MULTI, HEXBLOB):
                 for m in rx.finditer(v):
@@ -496,30 +637,39 @@ class Detector:
                         sp.append((m.start(), m.end(), "SECRET", "sec:" + m.group(0)))
         return sp
 
+    # Slower detections for disguised data: split-up or reversed keys, leetspeak names, odd IP/MAC forms, assignments.
     def _extra(self, v: str, plain: List[Span]) -> List[Span]:
+        """Run the slower disguised-data checks (split keys, reversed text, leetspeak, odd IP/MAC forms) and return extra spans."""
         out: List[Span] = []
         cov = _cover_index(plain) if plain else ([], [])
         n = len(v)
 
+        # Helper that records one extra span.
         def add(lo, hi, cat, key):
+            """Record one extra span."""
             out.append((lo, hi, cat, key))
 
+        # After a key prefix is found in a joined view, extend the span over up to 40 more key-like characters.
         def sec_extend(hi):
+            """Extend the end of a secret span over up to 40 following key characters."""
             k = 0
             while hi < n and k < 40 and (v[hi].isalnum() or v[hi] in "-_"):
                 hi += 1
                 k += 1
             return hi
 
+        # Different 'views' of the text: forward or reversed (r), with junk characters dropped and/or ROT13 applied.
         variants = [
             (_variant(v, JOIN_DROP), "f"), (_variant(v, None, rev=True), "r"),
             (_variant(v, None, rot=True), "f"), (_variant(v, JOIN_DROP, rev=True), "r"),
             (_variant(v, JOIN_DROP, rot=True), "f"), (_variant(v, None, rev=True, rot=True), "r"),
             (_variant(v, JOIN_DROP2), "f")
         ]
+        # Search each view; xi maps view positions back to the original text.
         for vi, ((x, xi), direction) in enumerate(variants):
             if not x:
                 continue
+            # Which patterns to run on this view.
             rules = list(PREFIX_RES) + [EMAIL_RX]
             if vi == 0:
                 rules.append(UUID_J)
@@ -527,6 +677,7 @@ class Detector:
                 rules = [r for r in PREFIX_RES if r is not PREFIX_RES[2]]
             for rx in rules:
                 for m in rx.finditer(x):
+                    # Translate the match back to original text coordinates.
                     seg = xi[m.start():m.end()]
                     lo, hi = min(seg), max(seg) + 1
                     if rx is PREFIX_RES[3] and not any(c.isdigit() for c in m.group(0)):
@@ -544,10 +695,12 @@ class Detector:
                     else:
                         cat, key = "SECRET", None
                         hi = sec_extend(hi) if direction == "f" else hi
+                    # Skip matches already found by the plain scan (IDs are always kept).
                     if _covered(cov, lo) and cat != "ID":
                         continue
                     add(lo, hi, cat, key or ("sec:" + v[lo:hi]))
 
+        # Build a list of name targets: each host name squashed to letters/digits, plus reversed and ROT13 forms.
         targets = []
         for h, _rx, distro in self.hosts:
             b = re.sub(r"[^0-9a-z]", "", h)
@@ -562,7 +715,9 @@ class Detector:
             if len(b) >= 4:
                 targets.append((b, "ID", "id:" + _norm_name(lit), False, False))
 
+        # Search the letters/digits of `txt` (ignoring punctuation and spaces) for any target name, optionally after leetspeak translation.
         def scan_names(txt: str, leet_tables, only_fwd=False):
+            """Look for target names in txt ignoring punctuation (optionally after leetspeak) and record any whole-word hits."""
             cmap = [m.start() for m in re.finditer(r"[0-9A-Za-z]", txt)]
             if not cmap:
                 return
@@ -584,10 +739,13 @@ class Detector:
                                 add(s, e, cat, key)
                         pos = cl.find(w, pos + 1)
 
+        # Scan plain text and two leetspeak translations.
         scan_names(v, [None, LEET_I, LEET_L])
+        # ROT47 only matters if the text has printable symbols to rotate.
         if any(33 <= ord(c) <= 126 and not c.isalnum() for c in v):
             scan_names(v.translate(ROT47), [None], only_fwd=True)
 
+        # Obfuscated IPs: spelled-out separators, hex octets, hex/decimal integers, IPv4-mapped IPv6.
         for m in IPX_RX.finditer(v):
             ip = _decode_ip_parts(IPX_PARTS.findall(m.group(0)))
             if ip:
@@ -603,9 +761,12 @@ class Detector:
             if _ip_from_ints([a >> 8, a & 255, b >> 8, b & 255]):
                 add(m.start(), m.end(), "IP", "ip:map" + m.group(0).lower())
 
+        # Detect MACs spelled as separate hex tokens ('a4 83 e7 ...'): collect runs of 1-, 2- or 4-digit hex tokens.
         run: List[Tuple[int, int, str]] = []
 
+        # End the current run; report a MAC if it is long enough and includes a letter a-f.
         def flush_hex():
+            """Finish the current run of hex tokens and record it as a MAC if it qualifies."""
             if len(run) >= 2 and sum(len(t[2]) for t in run) >= 12 and any(c in "abcdefABCDEF" for t in run for c in t[2]):
                 add(run[0][0], run[-1][1], "MAC", "mac:" + "".join(t[2] for t in run).lower())
             run.clear()
@@ -621,9 +782,12 @@ class Detector:
                 flush_hex()
         flush_hex()
 
+        # Detect MACs written as decimal bytes (e.g. 164,131,231,...).
         dec: List[Tuple[int, int, str]] = []
 
+        # End the current decimal run; report it if there are 6+ numbers and at least two are >= 100.
         def flush_dec():
+            """Finish the current run of decimal bytes and record it as a MAC if it qualifies."""
             if len(dec) >= 6 and sum(1 for t in dec if int(t[2]) >= 100) >= 2:
                 add(dec[0][0], dec[-1][1], "MAC", "mac:dec" + ",".join(t[2] for t in dec))
             dec.clear()
@@ -638,6 +802,7 @@ class Detector:
                 flush_dec()
         flush_dec()
 
+        # ARP style, integer and base64 MAC forms.
         for m in ARP_RX.finditer(v):
             if any(c in "abcdefABCDEF" for c in m.group(0)):
                 add(m.start(), m.end(), "MAC", "mac:" + "".join(x.zfill(2) for x in re.split(r"[:\-]", m.group(0).lower())))
@@ -653,6 +818,7 @@ class Detector:
                 except (binascii.Error, ValueError):
                     pass
 
+        # Assignments: hide the value when the name looks secret, or is an ALL_CAPS env var with a random-looking value.
         for m in ASSIGN_RX.finditer(v):
             name, val = m.group("n"), m.group("v")
             raw = val.strip("\"'")
@@ -661,6 +827,7 @@ class Detector:
             envstyle = bool(re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+", name)) and _env_value_entropy(raw)
             if not (_kw_name(name) or envstyle):
                 continue
+            # A secret may continue past a space (e.g. 'pw=abc 123'); pull in up to 3 following secret-looking words.
             end = m.end()
             for _ in range(3):
                 t = ASSIGN_TAIL.match(v, end)
@@ -671,10 +838,12 @@ class Detector:
                     break
                 end = t.end()
             add(m.start("v"), end, "SECRET", "sec:" + v[m.start("v"):end])
+        # High-entropy password-like tokens.
         for m in ENT_RX.finditer(v):
             tok = m.group(0)
             if _entropy_token(tok):
                 add(m.start(), m.end(), "SECRET", "sec:" + tok)
+        # Base64 pasted in short space-separated chunks: flag it if it is long and mostly mixed-case.
         for m in CHUNK_RX.finditer(v):
             toks = m.group(0).split()
             if sum(len(t) for t in toks) < 48:
@@ -683,6 +852,7 @@ class Detector:
             if mixed * 10 >= len(toks) * 6 and any(c.isdigit() for c in m.group(0)):
                 add(m.start(), m.end(), "SECRET", "sec:" + m.group(0))
 
+        # Emails written as 'name at host dot com' (only counted if a bracket or 'dot' word is present).
         for m in EMAIL_AT.finditer(v):
             g = m.group(0)
             if EMAIL_AT_BR.search(g):
@@ -690,7 +860,9 @@ class Detector:
         return out
 
     @staticmethod
+    # True if a distro-like word at v[s:e] should be treated as a host (lowercase or host-ish context).
     def _distro_ok(v: str, s: int, e: int) -> bool:
+        """Return True if a distro-like word at v[s:e] counts as a host name."""
         raw = v[s:e]
         if raw == raw.lower():
             return True
@@ -698,26 +870,33 @@ class Detector:
         return bool(HOST_CONTEXT.search(ctx))
 
     @staticmethod
+    # Same rule as _distro_ok but takes a regex match object.
     def _distro_is_host(v: str, m) -> bool:
+        """Return True if a regex match of a distro-like word counts as a host name."""
         raw = m.group(0)
         if raw == raw.lower():
             return True
         ctx = v[max(0, m.start() - 24):m.start()] + " " + v[m.end():m.end() + 24]
         return bool(HOST_CONTEXT.search(ctx))
 
+    # Decode a base64/hex-looking token and return True if the decoded text contains anything sensitive.
     def _blob_hits(self, tok: str, depth: int) -> bool:
+        """Decode an encoded-looking token and return True if the decoded text holds anything sensitive."""
         for raw in _decode_candidates(tok):
             if not raw:
                 continue
             if len(raw) < 4:
                 continue
+            # Short blobs must decode to plain ASCII, otherwise ordinary words would be misread as base64.
             if len(tok) < 24 and not all(32 <= b < 127 or b in (9, 10, 13) for b in raw):
                 continue
             s = raw.decode("utf-8", "replace")
+            # Mostly-unprintable output means it was not really text.
             if _printable_ratio(s) < 0.9:
                 continue
             if "BEGIN" in s and "KEY" in s:
                 return True
+            # Re-run the whole detector on the decoded text (one level deeper).
             nv, _ = normalise(s)
             if self.find(nv, depth + 1):
                 return True
@@ -740,16 +919,21 @@ class RelayMap:
     """LOCAL ONLY. placeholder <-> real value. Never printed, never in a report."""
 
     def __init__(self):
+        """Start with empty lookup tables and counters."""
+        # by_key: (category, key) -> placeholder; values: placeholder -> (category, real value); counters: next number per category.
         self.by_key: Dict[Tuple[str, str], str] = {}
         self.values: Dict[str, Tuple[str, str]] = {}
         self.counters: Dict[str, int] = {}
 
     def __repr__(self):
+        """Show only how many entries exist, never the real values."""
         return "<RelayMap entries=%d (values hidden)>" % len(self.values)
 
     __str__ = __repr__
 
     def placeholder(self, cat: str, key: str, value: str) -> str:
+        """Return the placeholder for (cat, key), creating <CAT-n> and storing the real value if it is new."""
+        # Reuse the same placeholder for the same value, otherwise make the next <CAT-n>.
         ph = self.by_key.get((cat, key))
         if ph is None:
             n = self.counters.get(cat, 0) + 1
@@ -760,14 +944,19 @@ class RelayMap:
         return ph
 
     def restorable(self) -> Dict[str, str]:
+        """Return only the HOST and PATH placeholders mapped to their real values."""
+        # Only HOST and PATH entries are ever exposed for restoring.
         return {p: v for p, (c, v) in self.values.items() if c in RESTORABLE}
 
     def dump_restorable(self) -> str:
+        """Return the restorable part of the map as a JSON string."""
         return json.dumps(self.restorable(), sort_keys=True)
 
     @classmethod
     def load_restorable(cls, s: str) -> "RelayMap":
+        """Build a RelayMap from JSON text produced by dump_restorable; raise ScrubError if the shape is wrong."""
         m = cls()
+        # Load a saved map; only well-formed <HOST-n>/<PATH-n> keys with string values are accepted.
         d = json.loads(s)
         if not isinstance(d, dict):
             raise ScrubError("bad map file")
@@ -779,10 +968,12 @@ class RelayMap:
         return m
 
 
+# Cache of built Detectors per data directory so the JSON files are read only once.
 _DET_CACHE: Dict[str, Detector] = {}
 
 
 def _detector(data_dir: Path) -> Detector:
+    """Return a cached Detector for the given data directory, building it from the JSON files on first use."""
     k = str(data_dir)
     if k not in _DET_CACHE:
         hosts, lits = load_names(data_dir)
@@ -791,6 +982,8 @@ def _detector(data_dir: Path) -> Detector:
 
 
 def _merge(spans: List[Span]) -> List[Tuple[int, int, str, Optional[str]]]:
+    """Merge overlapping spans into (start, end, category, key) tuples; the highest-priority category wins."""
+    # Merge overlapping detections: sort by start, then longest first; each merged entry keeps the best category.
     spans = sorted(spans, key=lambda s: (s[0], -s[1]))
     out: List[list] = []
     for s, e, c, k in spans:
@@ -807,7 +1000,9 @@ def _merge(spans: List[Span]) -> List[Tuple[int, int, str, Optional[str]]]:
     return [(a, b, c, (next(iter(ks)) if len(ks) == 1 and not wd else None)) for a, b, c, ks, wd in out]
 
 
+# Normalise text and return whatever the detector finds in it (used for verification).
 def _view_hits(det: Detector, text: str) -> List[Span]:
+    """Normalise text and return every sensitive span the detector finds in it."""
     v, _ = normalise(text)
     return det.find(v)
 
@@ -833,28 +1028,36 @@ def _scrub(
     hosts: Optional[Sequence[str]] = None,
     literals: Optional[Sequence[str]] = None,
 ):
+    """Core scrubber: replace sensitive spans with placeholders, then verify; return (clean_text or None, report dict)."""
+    # Basic input checks: text only, and within the size limit.
     if not isinstance(text, str):
         raise ScrubError("input is not text")
     if len(text) > MAX_INPUT:
         raise ScrubError("input too large")
 
+    # Caller-supplied names override the data files; otherwise use the cached detector.
     if hosts is not None or literals is not None:
         det = Detector(hosts or [], literals or [])
     else:
         det = _detector(data_dir if data_dir else DATA_DIR)
 
+    # Defuse any placeholder-looking text already in the input by changing its '<' to a look-alike.
     escaped = len(PH_ESC_RX.findall(text))
     text = PH_ESC_RX.sub("‹", text)
     view, idx = normalise(text)
+    # PASS 1: find all sensitive spans and merge overlaps.
     merged = _merge(det.find(view))
     counts: Dict[str, int] = {}
     pieces: List[str] = []
     pos = 0
+    # Rebuild the text, swapping each span for a placeholder like <SECRET-1>.
     for s, e, cat, key in merged:
+        # Convert normalised-view positions back to positions in the original text.
         o0, o1 = idx[s], idx[e - 1] + 1
         if o0 < pos:
             o0 = pos
         value = view[s:e]
+        # Dedupe key so the same value always gets the same placeholder.
         k = key if key else cat.lower() + ":" + re.sub(r"[-_\s']+", "-", value.lower())
         ph = mapping.placeholder(cat, k, value)
         counts[cat] = counts.get(cat, 0) + 1
@@ -864,6 +1067,7 @@ def _scrub(
     pieces.append(text[pos:])
     clean = "".join(pieces)
 
+    # PASS 2: scan the cleaned text again; anything left means fail closed (return None).
     # independent second verification
     left = _view_hits(det, clean)
     if left:
@@ -875,6 +1079,7 @@ def _scrub(
             "remaining": rem, "placeholders_escaped": escaped
         }
 
+    # Extra check: make sure no previously-mapped real value still appears (even with punctuation removed).
     cv, _ = normalise(clean)
     low = cv.lower()
     squashed = re.sub(r"[^0-9a-z]", "", low)
@@ -893,6 +1098,7 @@ def _scrub(
                 "remaining": {cat: 1}, "placeholders_escaped": escaped
             }
 
+    # PASS 3: decode URL-escapes, HTML entities and \u/\x escapes and scan those views too.
     views = {urllib.parse.unquote(clean), html.unescape(clean)}
     if "\\u" in clean or "\\x" in clean:
         try:
@@ -910,6 +1116,7 @@ def _scrub(
                 "placeholders_escaped": escaped
             }
 
+    # All checks passed: return the cleaned text and a report with counts only (never the secrets).
     return clean, {
         "ok": True, "reason": None, "counts": counts, "total": sum(counts.values()),
         "placeholders_escaped": escaped, "verified": True
@@ -928,6 +1135,7 @@ def scrub_with_map(
     Returns (clean_text | None, report, RelayMap).
     Fails closed on any unexpected error by returning (None, {"ok": False, ...}).
     """
+    # Use the caller's map or start a new one.
     m = mapping if mapping is not None else RelayMap()
     try:
         clean, rep = _scrub(
@@ -937,6 +1145,7 @@ def scrub_with_map(
             hosts=hosts,
             literals=literals,
         )
+    # Any failure returns (None, report): the unsafe text is never returned.
     except ScrubError as exc:
         return None, {"ok": False, "reason": "scrub-error: %s" % exc, "counts": {}}, m
     except BaseException as exc:  # fail closed on anything, incl. RecursionError/MemoryError
@@ -969,9 +1178,12 @@ def restore_inbound(text: str, mapping: RelayMap) -> str:
     """
     if not isinstance(text, str):
         raise TypeError("text required")
+    # Only HOST and PATH placeholders are in this table.
     table = mapping.restorable()
 
+    # Replace one placeholder with its real value, or leave it alone if unknown.
     def rep(m):
+        """Replacement callback: return the real value for a known placeholder, else the placeholder itself."""
         return table.get(m.group(0), m.group(0))
 
     return re.sub(r"<(?:HOST|PATH)-\d+>", rep, text)
@@ -979,6 +1191,8 @@ def restore_inbound(text: str, mapping: RelayMap) -> str:
 
 # --------------------------------------------------------------------------- CLI
 def _write_private(path: str, data: str):
+    """Write data to a file that only the owner can read or write (mode 0o600)."""
+    # Create the file readable only by the owner (0o600) and refuse to follow symlinks.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(data)
@@ -986,6 +1200,8 @@ def _write_private(path: str, data: str):
 
 
 def main(argv=None) -> int:
+    """Command line entry point: `out` scrubs stdin, `in --map FILE` restores placeholders. Returns the exit code."""
+    # Command line: `out` scrubs stdin; `in --map FILE` restores placeholders using a saved map.
     a = list(sys.argv[1:] if argv is None else argv)
     if not a or a[0] not in ("out", "in"):
         sys.stderr.write("usage: relayscrub-scrub out [--map FILE] < in\n       relayscrub-scrub in --map FILE < in\n")
@@ -998,10 +1214,12 @@ def main(argv=None) -> int:
             sys.stderr.write("--map needs a file\n")
             return 2
     try:
+        # Read all of stdin as UTF-8 text; non-UTF-8 input is rejected.
         text = sys.stdin.buffer.read().decode("utf-8")
     except UnicodeDecodeError:
         sys.stderr.write(json.dumps({"ok": False, "reason": "input-not-utf8"}) + "\n")
         return 1
+    # Outbound mode: the report goes to stderr, the clean text to stdout, exit code 1 on failure.
     if mode == "out":
         clean, rep, m = scrub_with_map(text)
         sys.stderr.write(json.dumps(rep, sort_keys=True) + "\n")
@@ -1015,6 +1233,7 @@ def main(argv=None) -> int:
                 return 1
         sys.stdout.write(clean)
         return 0
+    # Inbound mode needs the map file that `out --map` saved earlier.
     if not mpath:
         sys.stderr.write("in needs --map FILE\n")
         return 2
