@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: basic_scrub.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Educational Example: Deterministic Privacy Scrubbing & Reversible Restoration.
 #          Demonstrates how to scrub sensitive credentials (AWS keys, OpenAI keys,

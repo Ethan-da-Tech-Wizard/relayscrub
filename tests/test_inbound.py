@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: test_inbound.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Comprehensive unit tests for inbound untrusted LLM reply fencing.
 #          Tests header and nonce verification, DeepSeek reasoning tag isolation,

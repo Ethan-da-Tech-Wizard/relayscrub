@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: setup.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Packaging and installation configuration for RelayScrub.
 #          Defines metadata, package discovery, console script entry points,

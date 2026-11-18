@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: scrub.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Pure Standard Library Deterministic Privacy Scrubber & Restorer.
 #          Scrubs sensitive credentials, cloud API keys, private IPv4/IPv6 addresses,
