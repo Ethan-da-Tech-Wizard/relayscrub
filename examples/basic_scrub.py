@@ -1,18 +1,23 @@
-#!/usr/bin/env python3
-"""basic_scrub.py - Demonstrating deterministic privacy scrubbing before sending prompts to LLMs.
-
-This example illustrates:
-1. Scrubbing sensitive credentials (OpenAI/AWS keys, private IPs, MAC addresses, emails, paths).
-2. Receiving an audit report containing counts and categories (never leaking actual values).
-3. Using RelayMap to safely restore benign paths/hosts on reply, while permanently redacting credentials.
-"""
+# ==============================================================================
+# Program: basic_scrub.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Educational Example: Deterministic Privacy Scrubbing & Reversible Restoration.
+#          Demonstrates how to scrub sensitive credentials (AWS keys, OpenAI keys,
+#          passwords, private IPs, MAC addresses, emails, and filesystem paths)
+#          from agent prompts before external API transmission, audit redactions
+#          without leaking secrets, and safely restore harmless paths using RelayMap.
+# ==============================================================================
 
 from relayscrub import scrub_outbound, scrub_with_map, restore_inbound, RelayMap
 
 
 def main():
+    """Execute end-to-end outbound privacy scrubbing and inbound restoration demo."""
     print("=== RelayScrub: Basic Outbound Privacy Scrubbing Demo ===\n")
 
+    # Sample prompt containing a mixture of benign text and high-risk secrets
     sample_prompt = """
     Please help debug this script running on worker-node-01.
     Database configuration:
@@ -31,10 +36,10 @@ def main():
     print(sample_prompt.strip())
     print()
 
-    # Create a local, in-memory RelayMap for reversible identifiers
+    # Step 1: Create a local, in-memory RelayMap for reversible identifiers
     relay_map = RelayMap()
 
-    # Perform deterministic outbound scrubbing
+    # Step 2: Perform deterministic outbound scrubbing
     clean_text, report = scrub_outbound(sample_prompt, mapping=relay_map)
 
     print("--- 2. Scrubbed Prompt (Safe for External LLM API) ---")
@@ -60,6 +65,7 @@ def main():
     print("LLM Response Received:")
     print(simulated_llm_reply)
 
+    # Step 3: Restore benign paths while keeping credentials and IPs masked
     restored_reply = restore_inbound(simulated_llm_reply, relay_map)
     print("\nRestored Response (Benign paths restored, secrets/IPs preserved as placeholders):")
     print(restored_reply)

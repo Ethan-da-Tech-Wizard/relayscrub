@@ -1,4 +1,13 @@
-#!/usr/bin/env python3
+# ==============================================================================
+# Program: setup.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Packaging and installation configuration for RelayScrub.
+#          Defines metadata, package discovery, console script entry points,
+#          and dependency specifications (pure standard library, 0 external dependencies).
+# ==============================================================================
+
 from setuptools import setup, find_packages
 
 setup(
@@ -7,9 +16,9 @@ setup(
     description="Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
-    author="TWU LLC Systems Security Team",
+    author="Ethan-da-Tech-Wizard",
     author_email="security@twu.software",
-    url="https://github.com/twullc/relayscrub",
+    url="https://github.com/Ethan-da-Tech-Wizard/relayscrub",
     packages=find_packages(include=["relayscrub*"]),
     package_data={"relayscrub": ["data/*.json"]},
     include_package_data=True,

@@ -1,3 +1,18 @@
+# ==============================================================================
+# Program: __init__.py (relayscrub package)
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Top-level package exports for RelayScrub privacy scrubber & fencer.
+#          Provides zero-dependency, offline deterministic privacy scrubbing
+#          and untrusted LLM content fencing for autonomous AI agents.
+#          Exports:
+#            - scrub_outbound: Outbound prompt privacy sanitizer
+#            - restore_inbound: Reversible placeholder substitution for hosts/paths
+#            - ingest_untrusted_reply: Inbound content fencer & prompt injection scanner
+#            - make_fence: Cryptographic nonce fence builder
+# ==============================================================================
+
 """RelayScrub: Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.
 
 Clean public API exports:
