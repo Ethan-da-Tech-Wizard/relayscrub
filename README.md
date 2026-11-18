@@ -16,7 +16,7 @@ It provides two core security boundaries:
 
 ---
 
-## Educational Foundations & Threat Model (CIS 156 / Advanced Systems)
+## Background & Threat Model
 
 RelayScrub is designed to provide clear, mathematically sound, and deterministically verifiable security guarantees. Here is a detailed breakdown of the threat model and core engineering concepts:
 

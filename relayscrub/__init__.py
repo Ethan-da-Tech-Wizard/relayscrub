@@ -1,17 +1,7 @@
-# ==============================================================================
-# Program: __init__.py (relayscrub package)
-# Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
-# Last Modified: November 18, 2026
-# Purpose: Top-level package exports for RelayScrub privacy scrubber & fencer.
-#          Provides zero-dependency, offline deterministic privacy scrubbing
-#          and untrusted LLM content fencing for autonomous AI agents.
-#          Exports:
-#            - scrub_outbound: Outbound prompt privacy sanitizer
-#            - restore_inbound: Reversible placeholder substitution for hosts/paths
-#            - ingest_untrusted_reply: Inbound content fencer & prompt injection scanner
-#            - make_fence: Cryptographic nonce fence builder
-# ==============================================================================
+# Program: relayscrub - __init__.py
+# Programmer: Ethan-da-Tech-Wizard (written with Claude, an AI assistant)
+# Last Modified: 2026-11-18
+# Purpose: Package front door for relayscrub: re-exports the scrubber (scrub.py) and untrusted-reply fencer (inbound.py) functions as the public API.
 
 """RelayScrub: Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.
 
@@ -22,6 +12,7 @@ Clean public API exports:
 - make_fence: Generates tamper-evident cryptographic nonce fences.
 """
 
+# Pull the outbound privacy-scrubbing tools up to the package level, so users can write `from relayscrub import scrub_outbound`.
 from .scrub import (
     scrub_outbound,
     restore_inbound,
@@ -32,6 +23,7 @@ from .scrub import (
     Detector,
     load_names,
 )
+# Pull the inbound untrusted-reply tools up to the package level too.
 from .inbound import (
     ingest_untrusted_reply,
     ingest,
@@ -41,8 +33,10 @@ from .inbound import (
     render_table,
 )
 
+# Package version string.
 __version__ = "1.0.0"
 
+# The names that `from relayscrub import *` exposes (the public API).
 __all__ = [
     "scrub_outbound",
     "restore_inbound",
