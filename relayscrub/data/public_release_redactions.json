@@ -1,0 +1,13 @@
+{
+  "_doc": "Default host names and literal strings to redact.",
+  "hosts": [
+    "archbox",
+    "fedora",
+    "zorbox",
+    "bastion-node"
+  ],
+  "literals": [
+    "example-corp.test",
+    "boss@example-corp.test"
+  ]
+}

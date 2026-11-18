@@ -1,0 +1,47 @@
+"""RelayScrub: Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.
+
+Clean public API exports:
+- scrub_outbound: Pure stdlib deterministic outbound prompt scrubber.
+- restore_inbound: Swap restorable placeholders (<HOST-n>, <PATH-n>) back to local values.
+- ingest_untrusted_reply: Nonce fencing, HTML defanging, prompt injection detection, and <think> separation.
+- make_fence: Generates tamper-evident cryptographic nonce fences.
+"""
+
+from .scrub import (
+    scrub_outbound,
+    restore_inbound,
+    scrub_with_map,
+    normalise,
+    RelayMap,
+    ScrubError,
+    Detector,
+    load_names,
+)
+from .inbound import (
+    ingest_untrusted_reply,
+    ingest,
+    make_fence,
+    defang,
+    extract_items,
+    render_table,
+)
+
+__version__ = "1.0.0"
+
+__all__ = [
+    "scrub_outbound",
+    "restore_inbound",
+    "ingest_untrusted_reply",
+    "make_fence",
+    "ingest",
+    "defang",
+    "extract_items",
+    "render_table",
+    "scrub_with_map",
+    "normalise",
+    "RelayMap",
+    "ScrubError",
+    "Detector",
+    "load_names",
+    "__version__",
+]

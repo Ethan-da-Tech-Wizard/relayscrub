@@ -1,0 +1,25 @@
+{
+  "schema": "relayscrub.fleet-roles.v1",
+  "purpose": "Known host roles and callsigns for outbound detection.",
+  "hosts": {
+    "bastion-node": {
+      "aliases": [
+        "bastion",
+        "gateway"
+      ],
+      "callsign": "GATEWAY"
+    },
+    "archbox": {
+      "aliases": [
+        "worker-1"
+      ],
+      "callsign": "PERUN"
+    },
+    "fedora": {
+      "aliases": [
+        "traveler"
+      ],
+      "callsign": "ENKIDU"
+    }
+  }
+}
