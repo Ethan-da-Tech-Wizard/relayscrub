@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: __init__.py (relayscrub package)
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Top-level package exports for RelayScrub privacy scrubber & fencer.
 #          Provides zero-dependency, offline deterministic privacy scrubbing

@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: safe_inbound_fence.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Educational Example: Inbound Content Fencing & Anti-Injection Verification.
 #          Demonstrates how autonomous agent pipelines wrap untrusted third-party

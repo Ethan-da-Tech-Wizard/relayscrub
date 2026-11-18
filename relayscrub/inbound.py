@@ -1,7 +1,6 @@
 # ==============================================================================
 # Program: inbound.py
 # Programmer: Ethan-da-Tech-Wizard
-# Course: CIS 156 / Advanced Systems
 # Last Modified: November 18, 2026
 # Purpose: Untrusted LLM Content Fencer, Defanger, and Injection Detector.
 #          Treats any received or pasted LLM output as UNTRUSTED DATA, never instructions.
