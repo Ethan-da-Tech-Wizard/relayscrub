@@ -1,18 +1,21 @@
-#!/usr/bin/env python3
-"""safe_inbound_fence.py - Demonstrating wrapping untrusted LLM output before passing to an agent environment.
-
-This example illustrates:
-1. Handling untrusted, potentially malicious LLM responses (prompt injection, command execution, HTML attacks).
-2. DeepSeek-R1 <think>...</think> reasoning chain separation.
-3. Cryptographic nonce fencing to prevent fence-spoofing and prompt jailbreak breakouts.
-4. Defanging dangerous HTML tags, event handlers, and URI schemes.
-5. Strict item classification where 0 items ever auto-run and approval is enforced.
-"""
+# ==============================================================================
+# Program: safe_inbound_fence.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Educational Example: Inbound Content Fencing & Anti-Injection Verification.
+#          Demonstrates how autonomous agent pipelines wrap untrusted third-party
+#          LLM responses into tamper-evident cryptographic nonce fences, extract
+#          DeepSeek-R1 <think> reasoning chains into isolated display envelopes,
+#          defang active HTML / javascript: URIs, flag adversarial prompt injections
+#          and shell execution attacks, and enforce the zero auto-run invariant (auto_run == 0).
+# ==============================================================================
 
 from relayscrub import ingest_untrusted_reply, render_table
 
 
 def main():
+    """Execute inbound content fencing demo and verify security invariants."""
     print("=== RelayScrub: Safe Inbound Content Fencing Demo ===\n")
 
     # A simulated adversarial LLM response containing injection attempts and malicious commands
@@ -42,7 +45,7 @@ def main():
     print(hostile_reply.strip())
     print()
 
-    # Ingest and fence the untrusted reply
+    # Step 1: Ingest and fence the untrusted reply
     result = ingest_untrusted_reply(hostile_reply, round_no=1)
 
     print("--- 2. Fenced Containment Block ---")
@@ -67,6 +70,7 @@ def main():
             print(f"- {w}")
 
     print("\nSecurity verification:")
+    # Step 2: Invariant Check: Verify that no command can ever auto-run
     assert result["auto_run"] == 0, "Security Violation: Auto-run must strictly be 0!"
     print("✓ All execution items require explicit human approval.")
     print("✓ DeepSeek <think> reasoning was segregated from actionable instructions.")

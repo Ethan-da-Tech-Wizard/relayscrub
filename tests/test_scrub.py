@@ -1,4 +1,16 @@
-#!/usr/bin/env python3
+# ==============================================================================
+# Program: test_scrub.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Comprehensive unit tests for outbound privacy scrubbing and restoration.
+#          Tests Unicode NFKD normalization, homoglyph folding, secret token
+#          detection (OpenAI, AWS, GitHub, JWT, SSH), network address detection
+#          (IPv4, IPv6, MAC across standard/Cisco/ARP/base64/int formats),
+#          user paths, emails, RelayMap reversible substitution, and fail-closed
+#          double verification.
+# ==============================================================================
+
 import base64
 import json
 import os

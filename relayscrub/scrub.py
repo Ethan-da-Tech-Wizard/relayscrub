@@ -1,23 +1,20 @@
-#!/usr/bin/env python3
-"""relayscrub.scrub - Pure stdlib, offline deterministic privacy scrubber & restorer.
+# ==============================================================================
+# Program: scrub.py
+# Programmer: Ethan-da-Tech-Wizard
+# Course: CIS 156 / Advanced Systems
+# Last Modified: November 18, 2026
+# Purpose: Pure Standard Library Deterministic Privacy Scrubber & Restorer.
+#          Scrubs sensitive credentials, cloud API keys, private IPv4/IPv6 addresses,
+#          MAC hardware addresses, user filesystem paths, emails, and hostnames
+#          prior to outbound transmission to external LLMs.
+#          Key Technical Features:
+#            1. Unicode NFKD normalization & homoglyph / confusable folding
+#            2. Multi-token credential regex engines (AWS, OpenAI, GitHub, Slack, JWT, SSH)
+#            3. Network identifier detection (RFC 1918, Cisco/ARP MACs, base64 MACs)
+#            4. Reversible placeholder mapping (<HOST-n>, <PATH-n>) via RelayMap
+#            5. Fail-closed double-verification barrier (withholds output on leakage)
+# ==============================================================================
 
-Features:
-- Unicode NFKD normalisation and homoglyph/confusable folding (Cyrillic, Greek, fullwidth).
-- Zero-width, bidi formatting, and unprintable control characters stripped.
-- Multi-token detection: AWS, OpenAI, Anthropic, GitHub, Slack, Google API keys, JWT,
-  PEM/SSH private keys, bearer tokens, passwords/passphrases.
-- Network identifiers: MAC addresses (standard, Cisco, hex runs, base64, int, ARP),
-  Private IPv4 (RFC 1918, 169.254, 100.64/10), IPv6 (ULA/link-local, IPv4-mapped),
-  obfuscated IPs (hex, dec, octal, bracketed dots).
-- Personal identifiers: emails (standard, obfuscated with [at]/dot/spaces), home/system
-  file paths (/Users, /home, /srv, /Volumes, /mnt, /media, /root, C:\\Users, ~user),
-  UUIDs, user-defined hostnames and literal strings.
-- Reversible placeholder substitution (<HOST-n>, <PATH-n>) with localized RelayMap.
-- Independent double-verification: FAILS CLOSED (returns None) if any sensitive item
-  or encoded variant survives scrubbing.
-
-Zero external dependencies. Pure Python standard library.
-"""
 from __future__ import annotations
 
 import base64
@@ -79,28 +76,58 @@ CONF.update({c: "@" for c in "＠﹫"})
 
 
 def normalise(text: str) -> Tuple[str, List[int]]:
-    """Detection view of text: NFKD, zero-width/format/combining/control chars dropped, common confusables
-    folded to ASCII. Returns (view, idx) where idx[i] is the index in text that produced view[i]."""
+    """Build a normalized detection view of the input text with coordinate index mapping.
+
+    Educational Note on Unicode Normalization (NFKD):
+        Attackers and accidental formatting frequently inject characters that deceive simple string matchers:
+          - Unicode Confusables: Cyrillic 'а' (U+0430) looks identical to ASCII 'a' (U+0061).
+          - Zero-Width Characters: Non-printing characters (U+200B zero-width space, U+200C non-joiner)
+            interleaved between secret characters (e.g. s<U+200B>k<U+200B>-...).
+          - Unicode Category Cf (Format), Mn (Non-spacing mark), Me (Enclosing mark).
+        Normalization Form KD (NFKD) decomposes composite characters into base letters and compatibility forms.
+        We drop formatting marks and map confusables to standard ASCII, while recording `idx[i]`,
+        which maps each normalized character position back to its exact offset in the raw source string.
+
+    Parameters:
+        text (str): Raw input prompt string.
+
+    Returns:
+        Tuple[str, List[int]]:
+            view: Cleaned detection view where confusables are folded to ASCII.
+            idx: List of source string character indices corresponding to each character in view.
+    """
     out: List[str] = []
     idx: List[int] = []
     n_text = len(text)
+
+    # Step 1: Iterate over raw characters
     for i, ch in enumerate(text):
+        # Step 1a: Handle JSON-escaped forward slashes: "\/Users\/x" -> "/Users/x"
         if ch == "\\" and i + 1 < n_text and text[i + 1] == "/":
-            continue  # JSON-escaped slash: "\/Users\/x" reads as "/Users/x"
+            continue
+
         cat = unicodedata.category(ch)
+        # Step 1b: Skip zero-width formatting and non-spacing combining marks
         if cat in ("Cf", "Mn", "Me"):
             continue
+
+        # Step 1c: Normalize newline-like separators to standard newline or space
         if ch in "\u2028\u2029\x0b\x0c\x85":
             out.append("\n" if ch in "\u2028\u2029\x85" else " ")
             idx.append(i)
             continue
+
+        # Step 1d: Skip other control characters (except newline, tab, carriage return)
         if cat == "Cc" and ch not in "\n\t\r":
             continue
+
+        # Step 1e: Decompose character via NFKD and map known confusables to ASCII
         for c in unicodedata.normalize("NFKD", ch):
             if unicodedata.category(c) in ("Mn", "Me", "Cf"):
                 continue
             out.append(CONF.get(c, c))
             idx.append(i)
+
     return "".join(out), idx
 
 
@@ -169,7 +196,29 @@ def _name_rx(name: str) -> "re.Pattern[str]":
     return re.compile(r"(?<![a-z0-9])" + r"[-_\s]*".join(parts) + r"(?![a-z0-9])", re.I)
 
 
-# --------------------------------------------------------------------------- patterns
+# ==============================================================================
+# SECTION: Detection Regular Expressions & Token Patterns
+# Educational Explanation of Regular Expression Tokens:
+#   - (?<!...) and (?!...): Negative lookbehind and lookahead assertions.
+#     These ensure our regex matches only standalone tokens rather than substrings
+#     inside legitimate identifier words or long hashes.
+#   - MAC_RX: Matches standard IEEE 802 MAC addresses (e.g. 00:00:00:00:00:00 or 00-1A-2B-...)
+#     using hexadecimal pairs separated by colons, hyphens, or tabs.
+#   - MAC_CISCO: Matches Cisco-style dotted tri-groups (e.g. 0123.4567.89ab).
+#   - HOME_RX: Detects personal home directory paths on Unix (/Users/..., /home/...),
+#     system server mounts (/srv/..., /Volumes/..., /mnt/...), and Windows (C:\Users\...).
+#   - IPV4_RX: Matches dotted-decimal IPv4 addresses while validating against RFC 1918
+#     private address ranges (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, and 169.254/16).
+#   - SECRET_RES: Dedicated high-precision signatures for API keys and tokens:
+#       * sk-[...]: OpenAI secret API keys
+#       * gh[pousr]_[...], github_pat_[...]: GitHub personal and organization tokens
+#       * AKIA[...]: AWS access key IDs
+#       * AIza[...]: Google cloud platform API keys
+#       * xox[abprs]-[...]: Slack bot and user OAuth tokens
+#       * eyJ[...]: JSON Web Tokens (JWT base64-encoded header)
+#       * -----BEGIN ... KEY-----: OpenSSH and RSA/ECDSA private key blocks
+# ==============================================================================
+
 HEX = "[0-9a-f]"
 MAC_SEP = r"(?:\s*[:\-]\s*|[ \t]+|\r?\n)"
 MAC_RX = re.compile(r"(?<!%s)%s{2}(?:%s%s{2}){5,7}(?!%s)" % (HEX, HEX, MAC_SEP, HEX, HEX), re.I)
@@ -675,7 +724,18 @@ class Detector:
         return False
 
 
-# --------------------------------------------------------------------------- the map
+# ==============================================================================
+# SECTION: RelayMap (Localized Reversible Placeholder Map)
+# Educational Note:
+# RelayMap stores the bidirectional mapping between temporary placeholders
+# (e.g. <HOST-1>, <PATH-1>) and real local values on the developer's machine.
+# Security Invariant:
+#   - RelayMap is strictly LOCAL to the client machine and NEVER transmitted.
+#   - Only benign identifiers (HOST and PATH) are restorable via `restorable()`.
+#   - Sensitive credentials, MACs, private IPs, and emails are categorized as
+#     NON-RESTORABLE: they are scrubbed outbound and permanently withheld.
+# ==============================================================================
+
 class RelayMap:
     """LOCAL ONLY. placeholder <-> real value. Never printed, never in a report."""
 
@@ -752,7 +812,20 @@ def _view_hits(det: Detector, text: str) -> List[Span]:
     return det.find(v)
 
 
-# --------------------------------------------------------------------------- scrub / restore
+# ==============================================================================
+# SECTION: Core Scrubbing Engine with Fail-Closed Verification
+# Educational Note on Fail-Closed Sanitization:
+# In high-assurance security engineering, a single bug in regex replacement could
+# leak sensitive credentials (e.g. an overlapping match or encoding variant).
+# RelayScrub implements a "Fail-Closed" design:
+#   1. PASS 1 (Scrubbing): Detect sensitive spans, replace with placeholders (<CATEGORY-n>).
+#   2. PASS 2 (Double Verification): Re-run the detector over the cleaned text.
+#      If ANY secret, email, private IP, or path is found, the function DOES NOT
+#      return partially cleaned text. It returns None and reports 'verification-failed'.
+#   3. PASS 3 (Encoding Invariants): Unquote URL encoding, HTML unescape, and decode
+#      Unicode escapes. If an encoded sensitive token is revealed, scrubbing fails closed.
+# ==============================================================================
+
 def _scrub(
     text: str,
     data_dir: Optional[Path],
