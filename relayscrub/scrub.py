@@ -572,6 +572,9 @@ def _covered(cov, pos: int) -> bool:
 # Holds precompiled host/literal regexes. find() runs the direct patterns plus (at depth 0)
 # the obfuscation-aware _extra() pass, and recursively inspects decoded blobs.
 class Detector:
+    # Pre-compile one regex per host/literal once, up front: find() runs per message
+    # and recompiling inside it would dominate the cost. The bool marks hosts that are
+    # also ordinary distro words and so need a context check before being treated as a host.
     def __init__(self, hosts: Optional[Sequence[str]] = None, literals: Optional[Sequence[str]] = None):
         self.hosts = [(h, _name_rx(h), h in DISTRO_WORDS) for h in (hosts or [])]
         self.literals = [(l, _name_rx(l)) for l in (literals or [])]
@@ -915,6 +918,9 @@ class Detector:
 class RelayMap:
     """LOCAL ONLY. placeholder <-> real value. Never printed, never in a report."""
 
+    # by_key: (category, normalised value) -> placeholder, so the same value always
+    # maps to the same <CAT-n>. values: placeholder -> (category, real value), the
+    # only place real values live. counters: next number per category.
     def __init__(self):
         self.by_key: Dict[Tuple[str, str], str] = {}
         self.values: Dict[str, Tuple[str, str]] = {}

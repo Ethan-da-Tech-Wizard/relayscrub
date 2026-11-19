@@ -607,6 +607,8 @@ def _call(fn, text: str) -> str:
 # Scrub a very long single line in chunks. A second pass offset by half a chunk catches
 # secrets that straddled a first-pass chunk boundary.
 def _chunked(fn, line: str) -> str:
+    # One sweep over the text in SCRUB_CHUNK-sized pieces. `first` shifts the start of
+    # the sweep so the second pass cuts at different offsets than the first.
     def one_pass(t: str, first: int) -> str:
         out, i = [], 0
         if first:
