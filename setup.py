@@ -7,8 +7,10 @@
 #          and dependency specifications (pure standard library, 0 external dependencies).
 # ==============================================================================
 
+# Legacy setuptools entry; pyproject.toml carries the same metadata for modern builds.
 from setuptools import setup, find_packages
 
+# Metadata mirrors pyproject.toml. Pure standard library, so install_requires is empty.
 setup(
     name="relayscrub",
     version="1.0.0",
@@ -19,10 +21,12 @@ setup(
     author_email="security@twu.software",
     url="https://github.com/Ethan-da-Tech-Wizard/relayscrub",
     packages=find_packages(include=["relayscrub*"]),
+    # Ship the JSON name lists that scrub.py loads at runtime (data/*.json).
     package_data={"relayscrub": ["data/*.json"]},
     include_package_data=True,
     python_requires=">=3.8",
     install_requires=[],
+    # Console scripts expose each module's main() as a command.
     entry_points={
         "console_scripts": [
             "relayscrub-scrub = relayscrub.scrub:main",

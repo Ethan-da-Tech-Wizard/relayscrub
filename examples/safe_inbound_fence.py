@@ -18,6 +18,7 @@ def main():
     print("=== RelayScrub: Safe Inbound Content Fencing Demo ===\n")
 
     # A simulated adversarial LLM response containing injection attempts and malicious commands
+    # Fake attacker content: nonce-forging fence, injection phrases, dangerous shell and a javascript: link.
     hostile_reply = """
     <think>
     User asked for a system cleanup script.
@@ -45,6 +46,7 @@ def main():
     print()
 
     # Step 1: Ingest and fence the untrusted reply
+    # ingest never executes anything; it only returns the fenced block plus classified items.
     result = ingest_untrusted_reply(hostile_reply, round_no=1)
 
     print("--- 2. Fenced Containment Block ---")

@@ -20,13 +20,17 @@ import unittest
 from pathlib import Path
 
 # Add project root to sys.path
+# Repository root (parent of tests/), put first on sys.path so the package under test is imported from the checkout.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import relayscrub.scrub as R
 
+# Path of scrub.py, executed as a subprocess by the CLI tests.
 SCRUB_SCRIPT = str(PROJECT_ROOT / "relayscrub" / "scrub.py")
 
+# Throwaway data directory with synthetic name lists (fake hosts/literals) so the tests never depend on
+# or expose the real data files.
 TMP = tempfile.mkdtemp()
 D = Path(TMP)
 (D / "public_release_redactions.json").write_text(json.dumps(
@@ -34,26 +38,34 @@ D = Path(TMP)
 (D / "fleet_roles.json").write_text(json.dumps(
     {"hosts": {"Kraken-Prime": {"aliases": ["krk"], "callsign": "Leviathan"}, "mirandas-laptop": {}}}))
 (D / "retired_hosts.json").write_text(json.dumps({"hosts": [{"host": "old-ironbox", "aliases": []}, "Dead_Node"]}))
+# Fixture MAC address used throughout the MAC tests.
 MAC = "a4:83:e7:12:9c:5f"
+# Fixture OpenAI-style key, built by concatenation so the literal is not a scannable secret in source.
 KEYB = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
 
 
+# Shortcut: scrub with the fixture data directory.
 def S(t, **kw):
+    """Scrub t using the fixture data directory (extra kwargs pass through to scrub_outbound)."""
     return R.scrub_outbound(t, data_dir=D, **kw)
 
 
 class TestScrub(unittest.TestCase):
+    """Core scrubber behaviour: detection per category, restore rules, fail-closed paths and CLI."""
     def clean(self, t):
+        """Scrub t, assert the report is ok, and return (clean_text, report)."""
         c, rep = S(t)
         self.assertTrue(rep["ok"], rep)
         return c, rep
 
     def gone(self, t, *bad):
+        """Scrub t, then assert none of the given substrings survive (case-insensitive); returns the clean text."""
         c, rep = self.clean(t)
         for b in bad:
             self.assertNotIn(b.lower(), c.lower())
         return c
 
+    # MAC addresses: separators, case, zero-width characters, look-alike punctuation, line splits, placeholder stability.
     # ---- MAC
     def test_mac_colon_upper_lower(self):
         self.gone("x %s y %s" % (MAC, MAC.upper()), MAC)
@@ -87,6 +99,7 @@ class TestScrub(unittest.TestCase):
         self.assertEqual(c.count("<MAC-1>"), 2)
         self.assertIn("<MAC-2>", c)
 
+    # Host names: case/separator variants, aliases, possessives, word boundaries, look-alikes, distro-word handling.
     # ---- hosts
     def test_host_case_sep(self):
         c = self.gone("ssh KRAKEN_prime and kraken prime, Kraken-Prime; ZORBOX", "kraken", "zorbox")
@@ -122,6 +135,7 @@ class TestScrub(unittest.TestCase):
     def test_host_split_across_lines(self):
         self.gone("mirandas-\nlaptop", "mirandas")
 
+    # Private IPs (public ones must survive), obfuscated IPs, e-mails, configured literals.
     # ---- IP / email / path
     def test_private_ips(self):
         c = self.gone("10.1.2.3 172.20.0.9 192.168.1.50 169.254.1.1 100.101.2.3", "10.1.2.3", "192.168", "172.20", "100.101")
@@ -142,6 +156,7 @@ class TestScrub(unittest.TestCase):
         c = self.gone("cat /Users/jdoe/Documents/a.txt and /home/jdoe/x and C:\\Users\\jdoe\\f", "jdoe")
         self.assertNotIn("Documents", c)
 
+    # Credential shapes and key/value secrets.
     # ---- secrets
     def test_known_key_shapes(self):
         t = "%s ghp_%s AKIAABCDEFGHIJKLMNOP Bearer abcdefgh12345678 xoxb-1234567890-abcdef" % (KEYB, "a" * 24)
@@ -188,6 +203,7 @@ class TestScrub(unittest.TestCase):
         c, _ = self.clean("see /usr/local/lib/python3/site-packages and agent-asked-known-device-slug")
         self.assertIn("/usr/local/lib", c)
 
+    # Forged placeholders and the restore path: only HOST/PATH come back, exactly once.
     # ---- attacker/placeholder tricks
     def test_injected_placeholders_defanged(self):
         c, rep = self.clean("evil <HOST-1> and <secret-9> <PATH-2>")
@@ -219,6 +235,7 @@ class TestScrub(unittest.TestCase):
         m.values["<HOST-2>"] = ("HOST", "zorbox")
         self.assertEqual(R.restore_inbound("<HOST-1>", m), "<HOST-2>")
 
+    # Fail-closed behaviour, report hygiene (no raw values), determinism.
     # ---- fail closed / report / map hygiene
     def test_fail_closed_missing_data(self):
         c, rep = R.scrub_outbound("hello", data_dir=Path(TMP) / "nope")
@@ -288,6 +305,7 @@ class TestScrub(unittest.TestCase):
         c, rep = self.clean(t)
         self.assertEqual(c, t)
 
+    # Shipped data files and the command-line entry point.
     # ---- real data + CLI
     def test_real_data_loads_and_blocks_nothing_public(self):
         hosts, lits = R.load_names(R.DATA_DIR)
@@ -323,6 +341,7 @@ class TestScrub(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- obfuscation classes (Sentinel-2)
+# Join string pieces. Fixtures below are assembled from fragments so no complete fake secret appears literally in this file (and secret scanners do not trip on it).
 def J(*p):
     return "".join(p)
 
@@ -331,23 +350,28 @@ FGH = J("gh", "p_", "Q7xK2mPz9LrT4vWb8NcY1dHs6JfGa3EoUiZ5")
 FAK = J("AK", "IA", "ZQ7XK2MPZ9LRT4VW")
 FSK = J("s", "k-", "projAb3dE6gH9jK2mN5pQ8sT1vX4zC7")
 FPW = J("Zq9!fake", "Passw0rd-77")
+# Octets of a fake MAC for notation tests.
 FOCT = ["a4", "83", "e7", "1b", "5c", "9d"]
 FUUID = J("7b3f9c1e-5a42-4d8e", "-9f10-2c6ab7e3d581")
 FUSER = J("zqplant", "user")
 
 
 def sq(x):
+    """Squash to lowercase alphanumerics, so absence checks ignore separators and case."""
     import re
     return re.sub(r"[^0-9a-z]", "", x.lower())
 
 
 class TestObfuscation(unittest.TestCase):
+    """Obfuscated variants (split, reversed, rot13, leet, encoded, spelled-out) of secrets, hosts, IPs, MACs, e-mails and paths must still be scrubbed."""
     def out(self, t):
+        """Scrub t and return the clean text, asserting the report is ok."""
         c, rep = S(t)
         self.assertTrue(rep["ok"], rep)
         return c
 
     def gone(self, t, *bad):
+        """Like TestScrub.gone but compares squashed text, so punctuation inserted by the scrubber or the input cannot hide a leak."""
         c = self.out(t)
         for b in bad:
             self.assertNotIn(sq(b), sq(c), t)
@@ -448,6 +472,7 @@ class TestObfuscation(unittest.TestCase):
         self.assertNotIn("notes", c)
         self.assertTrue(c.endswith(" now"))
 
+    # Second round of obfuscation cases (split, ellipsised, ARP/int MACs, base32/leet/rot47 hosts).
     # ---- round 2
     def test_split_variants(self):
         g = FGH

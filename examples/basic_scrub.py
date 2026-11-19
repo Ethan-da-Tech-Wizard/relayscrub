@@ -17,6 +17,7 @@ def main():
     print("=== RelayScrub: Basic Outbound Privacy Scrubbing Demo ===\n")
 
     # Sample prompt containing a mixture of benign text and high-risk secrets
+    # Every secret below is fake and for demonstration only.
     sample_prompt = """
     Please help debug this script running on worker-node-01.
     Database configuration:
@@ -39,6 +40,7 @@ def main():
     relay_map = RelayMap()
 
     # Step 2: Perform deterministic outbound scrubbing
+    # scrub_outbound returns (None, report) on failure - the demo stops rather than printing raw input.
     clean_text, report = scrub_outbound(sample_prompt, mapping=relay_map)
 
     print("--- 2. Scrubbed Prompt (Safe for External LLM API) ---")

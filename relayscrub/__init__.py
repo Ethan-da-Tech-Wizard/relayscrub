@@ -21,6 +21,7 @@ Clean public API exports:
 - make_fence: Generates tamper-evident cryptographic nonce fences.
 """
 
+# Outbound side (scrub.py): scrubbing, restoring placeholders, and the supporting types.
 from .scrub import (
     scrub_outbound,
     restore_inbound,
@@ -31,6 +32,7 @@ from .scrub import (
     Detector,
     load_names,
 )
+# Inbound side (inbound.py): fencing and classifying untrusted model replies.
 from .inbound import (
     ingest_untrusted_reply,
     ingest,
@@ -40,8 +42,10 @@ from .inbound import (
     render_table,
 )
 
+# Package version; keep in sync with setup.py and pyproject.toml.
 __version__ = "1.0.0"
 
+# Explicit public API for 'from relayscrub import *'.
 __all__ = [
     "scrub_outbound",
     "restore_inbound",
