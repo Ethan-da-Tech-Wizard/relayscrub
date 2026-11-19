@@ -10,6 +10,13 @@
 #          double verification.
 # ==============================================================================
 
+# How to run: python3 -m unittest discover -s tests -v   (stdlib only, no network).
+# Design of this suite: it is adversarial. For each detection category the cases
+# are the evasions a leaking prompt would really contain (zero-width characters,
+# look-alike letters, line splits, encodings), and every assertion is of the form
+# "the sensitive value must NOT survive", because a missed value is the failure
+# mode that matters for a privacy scrubber. All hosts, keys and paths below are
+# synthetic fixtures; the shipped data files are only touched by the 'real data' test.
 import base64
 import json
 import os
@@ -67,33 +74,47 @@ class TestScrub(unittest.TestCase):
 
     # MAC addresses: separators, case, zero-width characters, look-alike punctuation, line splits, placeholder stability.
     # ---- MAC
+    # Case must not matter: the same MAC in lower and upper case is the same device.
     def test_mac_colon_upper_lower(self):
         self.gone("x %s y %s" % (MAC, MAC.upper()), MAC)
 
+    # Colon, hyphen, Cisco dotted and space-separated notations are all common in
+    # `ip link`, Windows `getmac`, and router UIs; each must be caught.
     def test_mac_separators(self):
         for m in ("00-00-00-00-00-00", "a483.e712.9c5f", "a4 83 e7 12 9c 5f", "00-00-00-00-00-00"):
             self.gone("mac " + m, "9c5f", "9c-5f", "9c 5f")
 
+    # Separator-less MACs (and 0x-prefixed ones) appear in firmware logs; the broad
+    # 12-hex rule is intentionally aggressive (fail closed).
     def test_mac_12hex_run(self):
         self.gone("id a483e7129c5f end", "a483e7129c5f")
         self.gone("0xA483E7129C5F", "a483e7129c5f")
 
+    # Zero-width characters inside the address defeat naive regexes; normalise() must
+    # strip them before matching.
     def test_mac_zero_width_inside(self):
         self.gone("a4:83:e7\u200b:12:9c\u2060:5f", "12:9c")
 
+    # Fullwidth colon, Georgian/modifier colons and Unicode dashes stand in for ':'
+    # and '-'; the confusable table must fold them to ASCII first.
     def test_mac_unicode_lookalike_separators(self):
         self.gone("a4\uff1a83\ua789e7\u02d012:9c:5f", "9c:5f", "9c")
         c, _ = self.clean("a4\u201083\u201187\u201312\u20149c\u22125f")
         self.assertNotIn("9c", c)
 
+    # NFKD folds fullwidth hex digits to ASCII; also pins that the first MAC in a
+    # fresh map is numbered <MAC-1>.
     def test_mac_fullwidth_digits(self):
         c, _ = self.clean("\uff41\uff14:83:e7:12:9c:5f")
         self.assertIn("<MAC-1>", c)
 
+    # Hard-wrapped terminal output can break a MAC at a newline.
     def test_mac_split_across_lines(self):
         c, _ = self.clean("addr a4:83:e7:\n12:9c:5f ok")
         self.assertNotIn("9c", c)
 
+    # The same device (any case/separator) must always get the same placeholder, and a
+    # different device a new number; the model relies on that to reason about identity.
     def test_mac_stable_placeholder(self):
         c, rep = self.clean("%s then %s and 00:00:00:00:00:00" % (MAC, MAC.upper().replace(":", "-")))
         self.assertEqual(c.count("<MAC-1>"), 2)
@@ -101,88 +122,116 @@ class TestScrub(unittest.TestCase):
 
     # Host names: case/separator variants, aliases, possessives, word boundaries, look-alikes, distro-word handling.
     # ---- hosts
+    # Case and separator variants of one host collapse to one <HOST-1>, counted 3 times.
     def test_host_case_sep(self):
         c = self.gone("ssh KRAKEN_prime and kraken prime, Kraken-Prime; ZORBOX", "kraken", "zorbox")
         self.assertEqual(c.count("<HOST-1>"), 3)
 
+    # Aliases, callsigns and retired hosts from the three data files are all blocked.
     def test_host_alias_callsign_retired(self):
         self.gone("krk Leviathan old-ironbox dead node", "krk", "leviathan", "ironbox", "dead node")
 
+    # "Miranda's laptop" leaks the owner name even though only 'mirandas-laptop' is
+    # in the data; the possessive form must still match.
     def test_host_apostrophe_and_possessive(self):
         self.gone("Miranda's laptop", "miranda")
 
+    # Word-boundary check: 'zorboxes' and 'krkx' merely contain host names and must
+    # survive, otherwise ordinary prose would be mangled.
     def test_host_not_substring(self):
         c, _ = self.clean("zorboxes and krkx are fine")
         self.assertIn("zorboxes", c)
 
+    # Cyrillic 'o' and zero-width joiners inside a host name must not bypass matching.
     def test_host_lookalike_and_zw(self):
         self.gone("z\u043erb\u043ex and Kra\u200bken-Pri\u200dme", "zorbox", "kraken")
 
+    # Any mDNS '<name>.local' is treated as a hostname even if not in the data files.
     def test_host_local_generic(self):
         c = self.gone("see host.example now", "weird-thing")
 
+    # 'Fedora' is both a distro and a configured host. Capitalised prose use must be
+    # left alone or every Linux question would be corrupted.
     def test_distro_capitalised_not_host(self):
         c, _ = self.clean("I installed Fedora last week")
         self.assertIn("Fedora", c)
         c, _ = self.clean("The Fedora release notes")
         self.assertIn("Fedora", c)
 
+    # ...but lowercase, or capitalised with host context (ssh/ping/'machine'), must be
+    # scrubbed: the cheap context rule is the compromise between privacy and usability.
     def test_distro_lowercase_or_context_is_host(self):
         self.gone("ssh fedora now", "fedora")
         self.gone("the machine Fedora is down", "fedora")
         self.gone("ping Fedora", "fedora")
 
+    # A host hyphenated across a line break is still one host.
     def test_host_split_across_lines(self):
         self.gone("mirandas-\nlaptop", "mirandas")
 
     # Private IPs (public ones must survive), obfuscated IPs, e-mails, configured literals.
     # ---- IP / email / path
+    # Pins the private ranges (10/8, 172.16/12, 192.168/16, link-local, CGNAT) AND that
+    # public 8.8.8.8 and 172.32.x (just outside /12) are kept.
     def test_private_ips(self):
         c = self.gone("10.1.2.3 172.20.0.9 192.168.1.50 169.254.1.1 100.101.2.3", "10.1.2.3", "192.168", "172.20", "100.101")
         c2, _ = self.clean("public 8.8.8.8 and 172.32.0.1 stay")
         self.assertIn("8.8.8.8", c2)
         self.assertIn("172.32.0.1", c2)
 
+    # Defanged [.] dots, zero-width characters, and IPv6 ULA/link-local forms.
     def test_ip_obfuscated_and_ipv6(self):
         self.gone("192[.]168[.]1[.]5 and 192.168\u200b.1.6 and fd12:3456:789a::1 fe80::1ff:fe23", "192", "fd12", "fe80")
 
+    # Plus-addressing and mixed-case domains must not escape the e-mail rule.
     def test_email(self):
         self.gone("mail bob.smith+x@Corp-Mail.org please", "bob.smith")
 
+    # Exact literal strings from the redactions file are removed wherever they occur.
     def test_literals(self):
         self.gone("write boss@example-corp.test or example-corp.test", "example-corp")
 
+    # Unix and Windows home paths hide the username; the whole path (including the
+    # file name) goes, not just the user segment.
     def test_home_paths(self):
         c = self.gone("cat /Users/jdoe/Documents/a.txt and /home/jdoe/x and C:\\Users\\jdoe\\f", "jdoe")
         self.assertNotIn("Documents", c)
 
     # Credential shapes and key/value secrets.
     # ---- secrets
+    # One sample of each high-precision key family (OpenAI, GitHub, AWS, Bearer, Slack).
     def test_known_key_shapes(self):
         t = "%s ghp_%s AKIAIOSFODNN7EXAMPLE Bearer abcdefgh12345678 xoxb-1234567890-abcdef" % (KEYB, "a" * 24)
         c = self.gone(t, KEYB, "ghp_", "AKIAABC", "abcdefgh1234", "xoxb")
 
+    # key=value, key: value, JSON-quoted and 'the password is X' phrasings; values with
+    # spaces must be removed in full.
     def test_password_forms(self):
         c = self.gone('password=hunter2 pwd: s3cr3t "password": "my long pass" the password is swordfish api_key = "k k"',
                       "hunter2", "s3cr3t", "long pass", "swordfish", "k k")
         self.assertNotIn("hunter", c)
 
+    # A PEM block is removed through its END marker while text after it survives; SSH
+    # public keys are removed too.
     def test_pem_and_ssh(self):
         pem = "-----BEGIN OPENSSH PRIVATE-KEY-----\nb3BlbnNzaC1rZXk\nAAAA\n-----END OPENSSH PRIVATE KEY-----"
         c = self.gone("k:\n%s\nafter" % pem, "b3Blbn")
         self.assertIn("after", c)
         self.gone("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc user", "AAAAC3")
 
+    # A PEM start with no END (truncated paste) must consume the rest rather than leak the body.
     def test_truncated_pem_blocks_rest(self):
         c, rep = self.clean("-----BEGIN RSA PRIVATE-KEY-----\nMIIEpAIBAAKCAQEA")
         self.assertNotIn("MIIE", c)
 
+    # Secrets/MACs/hosts hidden in base64 are decoded, found, and the whole blob replaced.
     def test_base64_of_secret(self):
         for payload in ("password=hunter2xyz", MAC, "ssh to zorbox", "token: abcdef"):
             b = base64.b64encode(payload.encode()).decode()
             c, rep = self.clean("blob " + b + " end")
             self.assertNotIn(b, c, payload)
 
+    # Line-wrapped and double-encoded base64 are still decoded and caught.
     def test_base64_wrapped_lines_and_nested(self):
         b = base64.b64encode(b"the password is correcthorse and more text here").decode()
         c, _ = self.clean("x\n%s\n%s\ny" % (b[:20], b[20:]))
@@ -191,20 +240,26 @@ class TestScrub(unittest.TestCase):
         c, _ = self.clean(bb)
         self.assertNotIn(bb, c)
 
+    # Hex-encoded text is decoded and rescanned the same way.
     def test_hex_encoded_blob(self):
         h = ("password=pw1").encode().hex()
         c, _ = self.clean("h " + h)
         self.assertNotIn(h, c)
 
+    # Three-part JWTs and generic long mixed-character tokens are removed.
     def test_jwt_and_long_token(self):
         self.gone("eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4 Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A9", "eyJhbGci", "Zm9vYmFy")
 
+    # False-positive guard: ordinary paths and long hyphenated words must not be scrubbed.
     def test_readable_slug_survives(self):
         c, _ = self.clean("see /usr/local/lib/python3/site-packages and agent-asked-known-device-slug")
         self.assertIn("/usr/local/lib", c)
 
     # Forged placeholders and the restore path: only HOST/PATH come back, exactly once.
     # ---- attacker/placeholder tricks
+    # Attack: user text contains <HOST-1>. If left intact, restore_inbound() would
+    # swap in a real value. Forged placeholders are escaped (and counted) so only the
+    # scrubber's own placeholders restore.
     def test_injected_placeholders_defanged(self):
         c, rep = self.clean("evil <HOST-1> and <secret-9> <PATH-2>")
         self.assertNotIn("<HOST-1>", c)
@@ -214,6 +269,8 @@ class TestScrub(unittest.TestCase):
         back = R.restore_inbound(c2, m)
         self.assertEqual(back.count("zorbox"), 1)
 
+    # Only HOST and PATH are restorable; secrets, MACs, IPs and e-mails stay as
+    # placeholders even if the model echoes them back.
     def test_restore_only_host_path(self):
         m = R.RelayMap()
         c, rep = S("zorbox %s 10.0.0.9 a@b.org password=zzzz1 /Users/jdoe/x" % MAC, mapping=m)
@@ -224,11 +281,14 @@ class TestScrub(unittest.TestCase):
             self.assertNotIn(bad, back)
         self.assertIn("<SECRET-1>", back)
 
+    # A reply containing unknown or look-alike placeholders must restore nothing extra.
     def test_restore_ignores_forged_and_lookalike(self):
         m = R.RelayMap()
         S("zorbox", mapping=m)
         self.assertEqual(R.restore_inbound("<HOST-7> <H\u043eST-1> <HOST-1>x", m).count("zorbox"), 1)
 
+    # Single-pass substitution: a restored value that itself looks like a placeholder
+    # must not be expanded again (prevents chained expansion).
     def test_restore_single_pass(self):
         m = R.RelayMap()
         m.values["<HOST-1>"] = ("HOST", "<HOST-2>")
@@ -237,11 +297,13 @@ class TestScrub(unittest.TestCase):
 
     # Fail-closed behaviour, report hygiene (no raw values), determinism.
     # ---- fail closed / report / map hygiene
+    # Missing data directory -> no output at all (None), never unscrubbed text.
     def test_fail_closed_missing_data(self):
         c, rep = R.scrub_outbound("hello", data_dir=Path(TMP) / "nope")
         self.assertIsNone(c)
         self.assertFalse(rep["ok"])
 
+    # Corrupt JSON and zero loaded hosts both fail closed.
     def test_fail_closed_corrupt_and_empty(self):
         d = Path(tempfile.mkdtemp())
         for n in ("public_release_redactions", "fleet_roles", "retired_hosts"):
@@ -253,16 +315,21 @@ class TestScrub(unittest.TestCase):
         self.assertIsNone(c)
         self.assertFalse(rep["ok"])
 
+    # Bytes, None and input over MAX_INPUT are refused.
     def test_non_text_and_oversize_blocked(self):
         self.assertIsNone(S(b"bytes")[0])
         self.assertIsNone(S(None)[0])
         self.assertIsNone(S("a" * (R.MAX_INPUT + 1))[0])
 
+    # Percent-encoded host names cannot be reliably rewritten, so the whole message is
+    # blocked with reason 'encoded-identifier' rather than guessed at.
     def test_encoded_identifier_blocks(self):
         c, rep = S("host %7a%6f%72box here")
         self.assertIsNone(c)
         self.assertEqual(rep["reason"], "encoded-identifier")
 
+    # Simulates a detector bug (first pass finds nothing). The independent second
+    # verification pass must catch the leak and withhold output.
     def test_verification_catches_missed_hit(self):
         orig = R.Detector.find
         calls = {"n": 0}
@@ -278,6 +345,7 @@ class TestScrub(unittest.TestCase):
         self.assertIsNone(c)
         self.assertEqual(rep["reason"], "verification-failed")
 
+    # The report (often logged) must contain counts only, never the matched values.
     def test_report_has_no_values(self):
         c, rep = self.clean("zorbox %s password=hunter2 /Users/jdoe 10.2.3.4 a@b.org" % MAC)
         j = json.dumps(rep)
@@ -285,12 +353,14 @@ class TestScrub(unittest.TestCase):
             self.assertNotIn(bad, j)
         self.assertEqual(set(rep["counts"]), {"HOST", "MAC", "SECRET", "PATH", "IP", "EMAIL"})
 
+    # Accidentally printing/logging the RelayMap must not reveal real values.
     def test_map_repr_hides_values(self):
         m = R.RelayMap()
         S("zorbox " + MAC, mapping=m)
         self.assertNotIn("zorbox", repr(m) + str(m))
         self.assertNotIn(MAC, m.dump_restorable())
 
+    # Same input gives same output, and re-scrubbing scrubbed text still passes.
     def test_deterministic_and_idempotent(self):
         t = "zorbox %s 10.0.0.1 password=abc\u200b123" % MAC
         a, _ = S(t)
@@ -300,6 +370,7 @@ class TestScrub(unittest.TestCase):
         self.assertTrue(rep["ok"])
         self.assertNotIn("zorbox", c2)
 
+    # Precision check: harmless prose, code and a 4-part version number pass unchanged.
     def test_clean_text_untouched(self):
         t = "Normal prose, code `x = 1`, version 1.2.3.4 and 8 bytes.\n"
         c, rep = self.clean(t)
@@ -307,6 +378,8 @@ class TestScrub(unittest.TestCase):
 
     # Shipped data files and the command-line entry point.
     # ---- real data + CLI
+    # Smoke test on the SHIPPED data files: each real host is scrubbed, and a pure
+    # distro-name mention is not blocked.
     def test_real_data_loads_and_blocks_nothing_public(self):
         hosts, lits = R.load_names(R.DATA_DIR)
         self.assertTrue(hosts)
@@ -320,6 +393,8 @@ class TestScrub(unittest.TestCase):
             self.assertTrue(rep["ok"], rep)
             self.assertNotIn(h.replace("-", " "), c.lower())
 
+    # Runs scrub.py as a subprocess (-I isolated mode): success path replaces the MAC;
+    # invalid UTF-8 returns exit 1 with empty stdout (fail closed at the CLI too).
     def test_cli_out_blocked_and_ok(self):
         p = subprocess.run([sys.executable, "-I", SCRUB_SCRIPT, "out"], input=("hi %s" % MAC).encode(), capture_output=True)
         self.assertEqual(p.returncode, 0)
@@ -329,6 +404,8 @@ class TestScrub(unittest.TestCase):
         self.assertEqual(p.returncode, 1)
         self.assertEqual(p.stdout, b"")
 
+    # The saved map file must be mode 0600 and contain no secrets; `in` then restores
+    # only the host/path values.
     def test_cli_map_roundtrip_private_mode(self):
         mp = os.path.join(tempfile.mkdtemp(), "m.json")
         p = subprocess.run([sys.executable, "-I", SCRUB_SCRIPT, "out", "--map", mp], input=b"on /Users/jdoe/x pw=abc12", capture_output=True)
@@ -342,6 +419,7 @@ class TestScrub(unittest.TestCase):
 
 # --------------------------------------------------------------------------- obfuscation classes (Sentinel-2)
 # Join string pieces. Fixtures below are assembled from fragments so no complete fake secret appears literally in this file (and secret scanners do not trip on it).
+# (fixtures are fragments; see comment above)
 def J(*p):
     return "".join(p)
 
@@ -377,6 +455,8 @@ class TestObfuscation(unittest.TestCase):
             self.assertNotIn(sq(b), sq(c), t)
         return c
 
+    # Keys split by newline, spaces, string concatenation, markdown code fences and
+    # table cells.
     def test_key_prefixes_split_spaced_quoted(self):
         for t in ("tok %s\n%s" % (FGH[:12], FGH[12:]), "tok %s %s" % (FGH[:20], FGH[20:]),
                   'tok = "%s" + "%s"' % (FGH[:10], FGH[10:]), "tok " + " ".join(FGH),
@@ -387,6 +467,7 @@ class TestObfuscation(unittest.TestCase):
         self.gone("aws " + FAK.lower(), FAK)
         self.gone("key %s\n%s" % (FSK[:8], FSK[8:]), FSK)
 
+    # Reversed and rot13 copies of keys, hosts and e-mails.
     def test_reversed_and_rot13(self):
         import codecs
         self.gone("tok " + FGH[::-1], FGH, FGH[::-1])
@@ -395,6 +476,7 @@ class TestObfuscation(unittest.TestCase):
         self.gone("host " + codecs.encode("zorbox", "rot13"), "zorbox")
         self.gone("mail " + "boss@example-corp.test"[::-1], "bossexamplecorp")
 
+    # Hosts written letter-spaced, line-split, in base64 or hex.
     def test_host_names_spaced_split_encoded(self):
         self.gone("host " + " ".join("zorbox"), "zorbox")
         self.gone("host zor\nbox", "zorbox")
@@ -403,12 +485,15 @@ class TestObfuscation(unittest.TestCase):
         self.gone("host " + b"zorbox".hex(), "zorbox")
         self.gone("host " + base64.b64encode(b"Kraken-Prime").decode(), "krakenprime")
 
+    # Distro words in normal prose survive, but letter-spaced 'F E D O R A' is blocked.
     def test_distro_capitalised_prose_survives(self):
         c = self.out("Fedora 40 was released and I like Arch")
         self.assertIn("Fedora 40", c)
         self.assertNotIn("fedora", self.out("ssh fedora now").lower())
         self.assertNotIn("fedora", self.out("host F E D O R A").lower())
 
+    # Comma, dot, spaced-nibble, table-split, mixed separators, decimal octets and
+    # base64 bytes.
     def test_mac_notations(self):
         h = "".join(FOCT)
         for t in ("b " + ",".join(FOCT), "b " + ".".join(FOCT), "mac " + " ".join(h),
@@ -420,6 +505,8 @@ class TestObfuscation(unittest.TestCase):
         c = self.out("mac " + base64.b64encode(bytes.fromhex(h)).decode())
         self.assertIn("<MAC-", c)
 
+    # Comma/hyphen/word-dot separators, reversed octets, hex and integer forms and
+    # IPv4-mapped IPv6; and a negative case so plain number lists are not IPs.
     def test_ip_notations(self):
         n = (192 << 24) + (168 << 16) + (77 << 8) + 41
         for t in ("192,168,77,41", "192-168-77-41", "192 . 168 . 77 . 41", "192 dot 168 dot 77 dot 41",
@@ -432,6 +519,8 @@ class TestObfuscation(unittest.TestCase):
         c = self.out("sizes 10, 20, 30, 40 and 1.2.3.4 and 8080")
         self.assertNotIn("<IP-", c)
 
+    # 'at'/'dot' spellings and letter-spaced addresses; plain 'look at example.com'
+    # must remain.
     def test_email_obfuscations(self):
         for t in ("ethan at twu dot software", "ethan [at] twu [dot] software", "ethan(at)twu.software",
                   "e t h a n @ t w u . s o f t w a r e", "boss at example-corp dot test"):
@@ -443,6 +532,8 @@ class TestObfuscation(unittest.TestCase):
         self.gone("user boss at example-corp dot test", "example-corp")
         self.gone("see e x a m p l e - c o r p . t e s t", "examplecorp")
 
+    # Environment-variable style names, YAML nesting, and prose such as 'log in using X';
+    # harmless settings like LOG_LEVEL=debug must survive.
     def test_env_and_prose_secrets(self):
         for t in ('export API_SECRET_KEY="%s"' % FPW, "MYAPP_SESSIONKEY=%s" % FPW, "STRIPE_LIVE=%s" % FPW,
                   "DB_PASSWORD\n=\n%s" % FPW, "db:\n  password:\n    %s" % FPW,
@@ -452,16 +543,20 @@ class TestObfuscation(unittest.TestCase):
         c = self.out("LOG_LEVEL=debug PORT=8080 PATH=/usr/bin author: Bob key point")
         self.assertIn("LOG_LEVEL=debug", c)
 
+    # Base64 key material cut into 8-character chunks.
     def test_pem_body_chunked(self):
         body = base64.b64encode(b"fake-private-key-material-for-tests-" * 6).decode()
         c = self.out(" ".join(body[i:i + 8] for i in range(0, len(body), 8)))
         self.assertNotIn(body[:40], sq(c).replace(" ", ""))
         self.assertNotIn(sq(body[:24]), sq(c))
 
+    # UUIDs in braces, upper case, no dashes, or split in two are all identifiers.
     def test_uuid(self):
         for t in (FUUID, FUUID.upper(), "{%s}" % FUUID, FUUID.replace("-", ""), "%s %s" % (FUUID[:18], FUUID[18:])):
             self.gone("uuid " + t, FUUID)
 
+    # Home-directory variants (~user, /srv, /Volumes, JSON-escaped slashes, spoken
+    # 'Users then X') and that the file name after the user segment is removed too.
     def test_paths_tail_and_forms(self):
         for t in ("at ~%s/x" % FUSER, "at /srv/%s/data" % FUSER, "at /Volumes/%s-ssd/x" % FUSER,
                   "at /private/var/Users/%s/x" % FUSER, 'at "\\/Users\\/%s\\/x"' % FUSER,
@@ -474,6 +569,8 @@ class TestObfuscation(unittest.TestCase):
 
     # Second round of obfuscation cases (split, ellipsised, ARP/int MACs, base32/leet/rot47 hosts).
     # ---- round 2
+    # More splits: quoted-printable '=' line joins, JSON key/value halves, YAML lists,
+    # shell backslash continuations and emoji separators.
     def test_split_variants(self):
         g = FGH
         for t in ("mail:\n" + "=\n".join(g[i:i + 9] for i in range(0, len(g), 9)),
@@ -482,11 +579,15 @@ class TestObfuscation(unittest.TestCase):
                   "tok " + "\U0001F642".join(g[i:i + 4] for i in range(0, len(g), 4))):
             self.gone(t, g[:10], g[10:20], g[20:30], g[28:])
 
+    # Truncated 'ghp_abc...' fragments are still partially sensitive; bare 'sk-...' in
+    # documentation is not.
     def test_partial_key_with_ellipsis(self):
         self.gone("key %s..." % FGH[:16], FGH[4:16])
         self.gone("key %s\u2026" % FGH[:16], FGH[4:16])
         self.assertIn("sk-... and ghp_ docs", self.out("see sk-... and ghp_ docs"))
 
+    # macOS `arp` drops leading zeros; MACs can also be integers or JSON byte arrays.
+    # A 13-digit number is NOT a MAC (precision check).
     def test_mac_arp_int_json(self):
         c = self.out("? (x) at a:83:e7:1:5c:9d on en0")
         self.assertIn("<MAC-", c)
@@ -496,6 +597,7 @@ class TestObfuscation(unittest.TestCase):
         self.assertIn("<MAC-", self.out('{"mac": [164, 131, 231, 27, 92, 157]}'))
         self.assertIn("record 1234567890123 rows", self.out("record 1234567890123 rows"))
 
+    # base32, leet-speak and rot47 spellings of host names.
     def test_host_base32_leet_rot47(self):
         self.gone("host " + base64.b32encode(b"zorbox").decode(), "zorbox")
         self.gone("host " + base64.b32encode(b"Kraken-Prime").decode(), "krakenprime")
@@ -511,6 +613,8 @@ class TestObfuscation(unittest.TestCase):
         for v in (FGH, FPW, ",".join(FOCT), "zorbox"):
             self.assertNotIn(v, blob)
 
+    # Performance/DoS guard: pathological 40k-character single lines for each regex
+    # family must finish in bounded time (no catastrophic backtracking).
     def test_forty_k_single_line_fast(self):
         import time
         for t in ("the quick brown fox 3 " * 1800, "a-" * 20000, "Ab3" * 13000, "/Users/" * 5700, "10.1.1.1 " * 4400,
