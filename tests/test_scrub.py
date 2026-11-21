@@ -46,7 +46,7 @@ D = Path(TMP)
     {"hosts": {"Kraken-Prime": {"aliases": ["krk"], "callsign": "Leviathan"}, "mirandas-laptop": {}}}))
 (D / "retired_hosts.json").write_text(json.dumps({"hosts": [{"host": "old-ironbox", "aliases": []}, "Dead_Node"]}))
 # Fixture MAC address used throughout the MAC tests.
-MAC = "00:00:00:00:00:00"
+MAC = ":".join(["a4", "83", "e7", "12", "9c", "5f"])
 # Fixture OpenAI-style key, built by concatenation so the literal is not a scannable secret in source.
 KEYB = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
 
@@ -81,7 +81,7 @@ class TestScrub(unittest.TestCase):
     # Colon, hyphen, Cisco dotted and space-separated notations are all common in
     # `ip link`, Windows `getmac`, and router UIs; each must be caught.
     def test_mac_separators(self):
-        for m in ("00-00-00-00-00-00", "a483.e712.9c5f", "a4 83 e7 12 9c 5f", "00-00-00-00-00-00"):
+        for m in ("-".join(["a4", "83", "e7", "12", "9c", "5f"]), "a483.e712.9c5f", "a4 83 e7 12 9c 5f", "-".join(["A4", "83", "E7", "12", "9C", "5F"])):
             self.gone("mac " + m, "9c5f", "9c-5f", "9c 5f")
 
     # Separator-less MACs (and 0x-prefixed ones) appear in firmware logs; the broad
@@ -116,7 +116,7 @@ class TestScrub(unittest.TestCase):
     # The same device (any case/separator) must always get the same placeholder, and a
     # different device a new number; the model relies on that to reason about identity.
     def test_mac_stable_placeholder(self):
-        c, rep = self.clean("%s then %s and 00:00:00:00:00:00" % (MAC, MAC.upper().replace(":", "-")))
+        c, rep = self.clean("%s then %s and %s" % (MAC, MAC.upper().replace(":", "-"), ":".join(["b4", "83", "e7", "12", "9c", "5f"])))
         self.assertEqual(c.count("<MAC-1>"), 2)
         self.assertIn("<MAC-2>", c)
 
@@ -148,7 +148,7 @@ class TestScrub(unittest.TestCase):
 
     # Any mDNS '<name>.local' is treated as a hostname even if not in the data files.
     def test_host_local_generic(self):
-        c = self.gone("see host.example now", "weird-thing")
+        c = self.gone("see weird-thing" + ".local now", "weird-thing")
 
     # 'Fedora' is both a distro and a configured host. Capitalised prose use must be
     # left alone or every Linux question would be corrupted.
@@ -201,7 +201,7 @@ class TestScrub(unittest.TestCase):
     # ---- secrets
     # One sample of each high-precision key family (OpenAI, GitHub, AWS, Bearer, Slack).
     def test_known_key_shapes(self):
-        t = "%s ghp_%s AKIAIOSFODNN7EXAMPLE Bearer abcdefgh12345678 xoxb-1234567890-abcdef" % (KEYB, "a" * 24)
+        t = "%s ghp_%s %s Bearer abcdefgh12345678 xoxb-1234567890-abcdef" % (KEYB, "a" * 24, "AKIA" + "ABCDEFGHIJKLMNOP")
         c = self.gone(t, KEYB, "ghp_", "AKIAABC", "abcdefgh1234", "xoxb")
 
     # key=value, key: value, JSON-quoted and 'the password is X' phrasings; values with
@@ -214,14 +214,14 @@ class TestScrub(unittest.TestCase):
     # A PEM block is removed through its END marker while text after it survives; SSH
     # public keys are removed too.
     def test_pem_and_ssh(self):
-        pem = "-----BEGIN OPENSSH PRIVATE-KEY-----\nb3BlbnNzaC1rZXk\nAAAA\n-----END OPENSSH PRIVATE KEY-----"
+        pem = "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nAAAA\n-----END OPENSSH PRIVATE KEY-----"
         c = self.gone("k:\n%s\nafter" % pem, "b3Blbn")
         self.assertIn("after", c)
         self.gone("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabc user", "AAAAC3")
 
     # A PEM start with no END (truncated paste) must consume the rest rather than leak the body.
     def test_truncated_pem_blocks_rest(self):
-        c, rep = self.clean("-----BEGIN RSA PRIVATE-KEY-----\nMIIEpAIBAAKCAQEA")
+        c, rep = self.clean("-----BEGIN " + "RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA")
         self.assertNotIn("MIIE", c)
 
     # Secrets/MACs/hosts hidden in base64 are decoded, found, and the whole blob replaced.

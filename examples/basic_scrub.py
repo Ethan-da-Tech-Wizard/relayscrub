@@ -21,7 +21,7 @@ def main():
     sample_prompt = """
     Please help debug this script running on worker-node-01.
     Database configuration:
-    - Host: 192.168.1.45 (internal interface: 00:00:00:00:00:00)
+    - Host: 192.168.1.45 (internal interface: <DEMO_MAC>)
     - Admin email: security-admin@internal-corp.test
     - Config file: /Users/alice/projects/backend/config.json
     - AWS S3 backup bucket access key: AKIAIOSFODNN7EXAMPLE
@@ -30,7 +30,7 @@ def main():
 
     Error log:
     Connection timed out while connecting to 10.0.0.12:5432 from /home/deploy/.pgpass.
-    """
+    """.replace("<DEMO_MAC>", ":".join(["00", "1A", "2B", "3C", "4D", "5E"]))
 
     print("--- 1. Original Unscrubbed Prompt ---")
     print(sample_prompt.strip())

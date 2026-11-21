@@ -248,7 +248,7 @@ def _name_rx(name: str) -> "re.Pattern[str]":
 #   - (?<!...) and (?!...): Negative lookbehind and lookahead assertions.
 #     These ensure our regex matches only standalone tokens rather than substrings
 #     inside legitimate identifier words or long hashes.
-#   - MAC_RX: Matches standard IEEE 802 MAC addresses (e.g. 00:00:00:00:00:00 or 00-1A-2B-...)
+#   - MAC_RX: Matches standard IEEE 802 MAC addresses (e.g. 00:1A:2B:xx:xx:xx or 00-1A-2B-...)
 #     using hexadecimal pairs separated by colons, hyphens, or tabs.
 #   - MAC_CISCO: Matches Cisco-style dotted tri-groups (e.g. 0123.4567.89ab).
 #   - HOME_RX: Detects personal home directory paths on Unix (/Users/..., /home/...),

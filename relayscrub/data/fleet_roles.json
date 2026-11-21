@@ -13,13 +13,13 @@
       "aliases": [
         "worker-1"
       ],
-      "callsign": "example-host"
+      "callsign": "EXAMPLE-CALLSIGN-2"
     },
     "fedora": {
       "aliases": [
         "traveler"
       ],
-      "callsign": "example-host"
+      "callsign": "EXAMPLE-CALLSIGN-3"
     }
   }
 }
