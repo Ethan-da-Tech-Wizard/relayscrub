@@ -12,13 +12,13 @@ RelayScrub is a high-assurance Python framework engineered for autonomous AI age
 
 It provides two core security boundaries:
 1. **Outbound Privacy Scrubber (`scrub_outbound`)**: Deterministically scrubs credentials, cloud API keys, private IPs, MAC addresses, home directories, and emails from prompt text before transmission. Supports reversible placeholders (`RelayMap`) for harmless identifiers (hosts/paths) while permanently wiping credentials.
-2. **Inbound Content Fencer (`ingest_untrusted_reply`)**: Treats all LLM replies as untrusted raw data. Encloses replies in cryptographically nonced fences, extracts and segregates DeepSeek-R1 `<think>` reasoning chains, defangs dangerous HTML/URIs, flags prompt injections and destructive commands, and guarantees that 0 commands ever auto-run without explicit human approval.
+2. **Inbound Content Fencer (`ingest_untrusted_reply`)**: Treats all LLM replies as untrusted raw data. Encloses replies in cryptographically nonced fences, extracts and segregates DeepSeek-R1 `<think>` reasoning chains, defangs dangerous HTML/URIs, flags prompt injections and destructive commands, and is designed so that no command auto-runs without explicit human approval (as exercised by the tests).
 
 ---
 
 ## Educational Foundations & Threat Model 
 
-RelayScrub is designed to provide clear, mathematically sound, and deterministically verifiable security guarantees. Here is a detailed breakdown of the threat model and core engineering concepts:
+RelayScrub is designed to provide deterministic, offline, stdlib-only scrubbing and fencing. It is a best-effort tool: the behavior described below is what the test suite exercises, not a formal proof. Here is a detailed breakdown of the threat model and core engineering concepts:
 
 ### 1. Bidirectional Trust Boundary Architecture
 Autonomous agents operate across an untrusted network perimeter. Inbound replies from external LLMs are untrusted data that could attempt prompt injection or execute destructive commands. Outbound prompts risk leaking credentials, network topology, or personal identifiers:
@@ -44,7 +44,7 @@ Autonomous agents operate across an untrusted network perimeter. Inbound replies
  └───────────────────────────────┘
          │
          ▼
-[Protected Execution Environment] (Guaranteed 0 auto-run items)
+[Protected Execution Environment] (0 auto-run items in the tested cases)
 ```
 
 ### 2. Unicode NFKD Normalization & Homoglyph Defeat
@@ -66,7 +66,7 @@ Autonomous agents operate across an untrusted network perimeter. Inbound replies
   ... untrusted payload ...
   <<<END-UNTRUSTED-7a8f9b2c3d4e5f6a1b2c3d4e>>>
   ```
-  Because the attacker cannot predict the random nonce, they cannot forge the closing delimiter. Breakout is mathematically prevented.
+  Because the attacker cannot predict the random nonce, they cannot forge the closing delimiter. With a random nonce of sufficient length, guessing the closing delimiter is computationally impractical; the tests cover forged-delimiter attempts, not every possible input.
 
 ### 5. DeepSeek-R1 `<think>` Reasoning Chain Segregation
 * **The Attack Vector**: Reasoning models (e.g. DeepSeek-R1) generate chain-of-thought tokens within `<think>...</think>` tags. Adversaries often embed prompt injections or dangerous instructions within simulated reasoning traces.
@@ -83,12 +83,12 @@ Autonomous agents operate across an untrusted network perimeter. Inbound replies
 
 RelayScrub is architected for real-time agent pipelines where throughput and predictability are paramount:
 
-| Metric | Guarantee / Result | Security Impact |
+| Metric | Design target / Observed | Notes |
 | :--- | :--- | :--- |
-| **Time Complexity** | **O(N) Strict Linear** | Total immunity to regex catastrophic backtracking (ReDoS). |
-| **Dependencies** | **0 (Python stdlib only)** | No supply chain attack surface, zero binary wheels, 100% offline. |
-| **40,000-char Single-Line Scan** | **< 0.15 seconds** | Tested across heavy repetitive patterns and obfuscated tokens. |
-| **Sliding Window Sizing** | **2,000 chars (step 1,700)** | Bounded memory buffer prevents resource exhaustion. |
+| **Time Complexity** | **Intended linear in input length** | Patterns and window sizes are chosen to avoid catastrophic backtracking; the tests include long adversarial inputs, but this is not a proof of ReDoS immunity. |
+| **Dependencies** | **0 (Python stdlib only)** | No third-party runtime dependencies (stdlib only), so no third-party package supply chain; works offline. |
+| **40,000-char Single-Line Scan** | **< 0.15 seconds** | Timing measured on one machine; varies by hardware. Tested on repetitive patterns and obfuscated tokens. |
+| **Sliding Window Sizing** | **2,000 chars (step 1,700)** | Bounded memory buffer limits resource use. |
 | **Hard Length Ceiling** | **40,000 chars** | Inputs capped with secondary tail-scanning to catch buried attacks. |
 | **Verification Barrier** | **Fail-Closed** | Post-scrub verification pass blocks text if any hit survives. |
 
@@ -163,7 +163,7 @@ print(result["block"])
 print(render_table(result["items"]))
 
 # Safety invariant:
-assert result["auto_run"] == 0, "Guaranteed: 0 items will run on their own."
+assert result["auto_run"] == 0, "Expected: 0 items run on their own."
 ```
 
 ### 3. Reversible Restoration
@@ -205,13 +205,13 @@ relayscrub-inbound in --round 1 < reply.txt
 
 ## Hermetic Unit Test Suite
 
-The test suite runs 100% hermetically in standard Python without external cloud services:
+The test suite runs hermetically in standard Python without external cloud services:
 ```bash
 python3 -m unittest discover -s tests -p "test_*.py"
 ```
 Output:
 ```
-Ran 122 tests in 7.56s
+Ran 122 tests in ~8s (varies by machine; 6-23s observed)
 OK
 ```
 
