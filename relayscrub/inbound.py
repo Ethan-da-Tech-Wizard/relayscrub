@@ -10,7 +10,7 @@
 #            3. HTML tag defanging, event handler disarming, and dangerous URI scheme neutralization
 #            4. Multi-vector prompt injection detection (DAN, role overrides, pre-approvals)
 #            5. Destructive shell command and script execution detection
-#            6. Guaranteed linear O(N) scan time with bounded sliding windows
+#            6. Bounded sliding windows intended to keep scan time roughly linear (not proven)
 #            7. Fail-closed scrubber integration with zero auto-run invariant (auto_run == 0)
 # ==============================================================================
 

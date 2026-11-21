@@ -45,8 +45,12 @@ D = Path(TMP)
 (D / "fleet_roles.json").write_text(json.dumps(
     {"hosts": {"Kraken-Prime": {"aliases": ["krk"], "callsign": "Leviathan"}, "mirandas-laptop": {}}}))
 (D / "retired_hosts.json").write_text(json.dumps({"hosts": [{"host": "old-ironbox", "aliases": []}, "Dead_Node"]}))
-# Fixture MAC address used throughout the MAC tests.
-MAC = ":".join(["a4", "83", "e7", "12", "9c", "5f"])
+# Fixture MAC address used throughout the MAC tests: a locally administered (02:..) value, built from pieces at run time
+# so no MAC-shaped literal sits in the source. _M is the six octets; a Cisco-dotted form and a bare 12-hex form are derived.
+_M = ["02", "5e", "c1", "12", "9c", "5f"]
+MAC = ":".join(_M)
+_MDOT = "%s%s.%s%s.%s%s" % tuple(_M)
+_MHEX = "".join(_M)
 # Fixture OpenAI-style key, built by concatenation so the literal is not a scannable secret in source.
 KEYB = "sk-" + "A1b2C3d4E5f6G7h8I9j0"
 
@@ -81,42 +85,42 @@ class TestScrub(unittest.TestCase):
     # Colon, hyphen, Cisco dotted and space-separated notations are all common in
     # `ip link`, Windows `getmac`, and router UIs; each must be caught.
     def test_mac_separators(self):
-        for m in ("-".join(["a4", "83", "e7", "12", "9c", "5f"]), "a483.e712.9c5f", "a4 83 e7 12 9c 5f", "-".join(["A4", "83", "E7", "12", "9C", "5F"])):
+        for m in ("-".join(_M), _MDOT, " ".join(_M), "-".join(o.upper() for o in _M)):
             self.gone("mac " + m, "9c5f", "9c-5f", "9c 5f")
 
     # Separator-less MACs (and 0x-prefixed ones) appear in firmware logs; the broad
     # 12-hex rule is intentionally aggressive (fail closed).
     def test_mac_12hex_run(self):
-        self.gone("id a483e7129c5f end", "a483e7129c5f")
-        self.gone("0xA483E7129C5F", "a483e7129c5f")
+        self.gone("id " + _MHEX + " end", _MHEX)
+        self.gone("0x" + _MHEX.upper(), _MHEX)
 
     # Zero-width characters inside the address defeat naive regexes; normalise() must
     # strip them before matching.
     def test_mac_zero_width_inside(self):
-        self.gone("a4:83:e7\u200b:12:9c\u2060:5f", "12:9c")
+        self.gone("%s:%s:%s\u200b:12:9c\u2060:5f" % tuple(_M[:3]), "12:9c")
 
     # Fullwidth colon, Georgian/modifier colons and Unicode dashes stand in for ':'
     # and '-'; the confusable table must fold them to ASCII first.
     def test_mac_unicode_lookalike_separators(self):
-        self.gone("a4\uff1a83\ua789e7\u02d012:9c:5f", "9c:5f", "9c")
-        c, _ = self.clean("a4\u201083\u201187\u201312\u20149c\u22125f")
+        self.gone("%s\uff1a%s\ua789%s\u02d012:9c:5f" % tuple(_M[:3]), "9c:5f", "9c")
+        c, _ = self.clean("%s\u2010%s\u201187\u201312\u20149c\u22125f" % tuple(_M[:2]))
         self.assertNotIn("9c", c)
 
     # NFKD folds fullwidth hex digits to ASCII; also pins that the first MAC in a
     # fresh map is numbered <MAC-1>.
     def test_mac_fullwidth_digits(self):
-        c, _ = self.clean("\uff41\uff14:83:e7:12:9c:5f")
+        c, _ = self.clean("\uff10\uff12:%s:%s:12:9c:5f" % tuple(_M[1:3]))
         self.assertIn("<MAC-1>", c)
 
     # Hard-wrapped terminal output can break a MAC at a newline.
     def test_mac_split_across_lines(self):
-        c, _ = self.clean("addr a4:83:e7:\n12:9c:5f ok")
+        c, _ = self.clean("addr %s:%s:%s:\n12:9c:5f ok" % tuple(_M[:3]))
         self.assertNotIn("9c", c)
 
     # The same device (any case/separator) must always get the same placeholder, and a
     # different device a new number; the model relies on that to reason about identity.
     def test_mac_stable_placeholder(self):
-        c, rep = self.clean("%s then %s and %s" % (MAC, MAC.upper().replace(":", "-"), ":".join(["b4", "83", "e7", "12", "9c", "5f"])))
+        c, rep = self.clean("%s then %s and %s" % (MAC, MAC.upper().replace(":", "-"), ":".join(["06"] + _M[1:])))
         self.assertEqual(c.count("<MAC-1>"), 2)
         self.assertIn("<MAC-2>", c)
 
@@ -349,7 +353,7 @@ class TestScrub(unittest.TestCase):
     def test_report_has_no_values(self):
         c, rep = self.clean("zorbox %s password=hunter2 /Users/jdoe 10.2.3.4 a@b.org" % MAC)
         j = json.dumps(rep)
-        for bad in ("zorbox", "a4:83", "hunter2", "jdoe", "10.2.3.4", "a@b.org"):
+        for bad in ("zorbox", ":".join(_M[:2]), "hunter2", "jdoe", "10.2.3.4", "a@b.org"):
             self.assertNotIn(bad, j)
         self.assertEqual(set(rep["counts"]), {"HOST", "MAC", "SECRET", "PATH", "IP", "EMAIL"})
 
@@ -429,7 +433,7 @@ FAK = J("AK", "IA", "ZQ7XK2MPZ9LRT4VW")
 FSK = J("s", "k-", "projAb3dE6gH9jK2mN5pQ8sT1vX4zC7")
 FPW = J("Zq9!fake", "Passw0rd-77")
 # Octets of a fake MAC for notation tests.
-FOCT = ["a4", "83", "e7", "1b", "5c", "9d"]
+FOCT = ["02", "5e", "c1", "1b", "5c", "9d"]
 FUUID = J("7b3f9c1e-5a42-4d8e", "-9f10-2c6ab7e3d581")
 FUSER = J("zqplant", "user")
 
@@ -522,10 +526,10 @@ class TestObfuscation(unittest.TestCase):
     # 'at'/'dot' spellings and letter-spaced addresses; plain 'look at example.com'
     # must remain.
     def test_email_obfuscations(self):
-        for t in ("ethan at twu dot software", "ethan [at] twu [dot] software", "ethan(at)twu.software",
-                  "e t h a n @ t w u . s o f t w a r e", "boss at example-corp dot test"):
+        for t in ("ethan at example dot com", "ethan [at] example [dot] com", "ethan(at)example.com",
+                  "e t h a n @ e x a m p l e . c o m", "boss at example-corp dot test"):
             c = self.out("mail " + t)
-            self.assertNotIn("twu", c.lower().replace("twu.software", ""), t)
+            self.assertNotIn("example", c.lower().replace("example.com", "").replace("example-corp", ""), t)
             self.assertNotIn("ethan", c.lower(), t)
             self.assertNotIn("boss", c.lower(), t)
         self.assertIn("look at example.com", self.out("look at example.com"))
@@ -589,7 +593,7 @@ class TestObfuscation(unittest.TestCase):
     # macOS `arp` drops leading zeros; MACs can also be integers or JSON byte arrays.
     # A 13-digit number is NOT a MAC (precision check).
     def test_mac_arp_int_json(self):
-        c = self.out("? (x) at a:83:e7:1:5c:9d on en0")
+        c = self.out("? (x) at 2:%s:%s:1:5c:9d on en0" % tuple(_M[1:3]))
         self.assertIn("<MAC-", c)
         self.assertNotIn("5c:9d", c)
         n = int("".join(FOCT), 16)

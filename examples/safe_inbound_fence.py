@@ -58,11 +58,11 @@ def main():
     print(render_table(result["items"]))
     print()
 
-    print("--- 4. Safety Guarantees & Summary ---")
+    print("--- 4. Safety Invariants Checked & Summary ---")
     print(f"Nonce: {result['nonce']}")
     print(f"Summary: {result['summary']}")
     print(f"Flagged items count: {result['flagged']}")
-    print(f"Auto-run count: {result['auto_run']} (Guaranteed 0)")
+    print(f"Auto-run count: {result['auto_run']} (0 in this example)")
     print(f"Extracted <think> blocks: {len(result['thoughts'])}")
 
     if result["warnings"]:

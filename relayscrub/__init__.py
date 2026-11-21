@@ -3,7 +3,7 @@
 # Programmer: Ethan-da-Tech-Wizard
 # Last Modified: November 18, 2026
 # Purpose: Top-level package exports for RelayScrub privacy scrubber & fencer.
-#          Provides zero-dependency, offline deterministic privacy scrubbing
+#          Provides offline, standard-library-only privacy scrubbing
 #          and untrusted LLM content fencing for autonomous AI agents.
 #          Exports:
 #            - scrub_outbound: Outbound prompt privacy sanitizer
@@ -12,7 +12,7 @@
 #            - make_fence: Cryptographic nonce fence builder
 # ==============================================================================
 
-"""RelayScrub: Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.
+"""RelayScrub: an experimental offline, stdlib-only scrubber for secrets and personal data in prompts, plus fencing for untrusted LLM replies.
 
 Clean public API exports:
 - scrub_outbound: Pure stdlib deterministic outbound prompt scrubber.
