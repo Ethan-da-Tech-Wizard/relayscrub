@@ -1,14 +1,13 @@
 # RelayScrub
 
-**Zero-Dependency, Offline Deterministic Privacy Scrubber & Untrusted LLM Content Fencing Framework for AI Agents.**
+**Experimental, stdlib-only Python library that scrubs likely secrets from prompts before they leave your machine and fences LLM replies as untrusted text.** Pattern-based: it can miss things. See Limits below.
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Python: >=3.8](https://img.shields.io/badge/python-%3E%3D3.8-blue.svg)](https://www.python.org/)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0%20(stdlib%20only)-brightgreen.svg)]()
-[![Security: Fail-Closed](https://img.shields.io/badge/security-fail--closed-red.svg)]()
 [![Author: Ethan-da-Tech-Wizard](https://img.shields.io/badge/author-Ethan--da--Tech--Wizard-orange.svg)](https://github.com/Ethan-da-Tech-Wizard)
 
-RelayScrub is a high-assurance Python framework engineered for autonomous AI agents, multi-agent swarms, and human-in-the-loop developer tools interacting with third-party LLMs (e.g. OpenAI, Anthropic, DeepSeek, Google, local inference engines).
+RelayScrub is an experimental Python library intended for autonomous AI agents, multi-agent swarms, and human-in-the-loop developer tools interacting with third-party LLMs (e.g. OpenAI, Anthropic, DeepSeek, Google, local inference engines).
 
 It provides two core security boundaries:
 1. **Outbound Privacy Scrubber (`scrub_outbound`)**: Deterministically scrubs credentials, cloud API keys, private IPs, MAC addresses, home directories, and emails from prompt text before transmission. Supports reversible placeholders (`RelayMap`) for harmless identifiers (hosts/paths) while permanently wiping credentials.
@@ -217,13 +216,22 @@ OK
 
 ---
 
+## Limits and status
+
+* Experimental. Detection is pattern- and heuristic-based, so it can miss secrets, private identifiers, and injection attempts, and it can flag harmless text. Treat the output as a safety net, not a guarantee.
+* The behavior described above is what the 122 unit tests exercise (`python3 -m unittest discover -s tests`, observed passing on a fresh clone, Python 3.9). Passing tests are the author's own and are not an independent audit or a formal proof.
+* The library makes no network calls and has no third-party dependencies; that is a design choice, not a security certification.
+* The timing figure above comes from one machine.
+* Much of the code and tests were written with AI coding assistants under the author's direction and review.
+
+---
+
 ## Author & Open Source Ecosystem
 
 Created and maintained by [Ethan-da-Tech-Wizard](https://github.com/Ethan-da-Tech-Wizard).
 
-Explore related high-assurance open source security and autonomous systems projects:
+Related projects by the same author:
 * [**SovereignLoRA Lab**](https://github.com/Ethan-da-Tech-Wizard/sovereign-lora-lab) — Local edge LLM fine-tuning, Direct Preference Optimization (DPO), and Reinforcement Learning (GRPO) engine.
-* [**RelayScrub**](https://github.com/Ethan-da-Tech-Wizard/relayscrub) — Zero-dependency, offline deterministic privacy scrubber, cryptographic nonce fencer, and prompt injection detector for autonomous AI agent pipelines.
 * [**GitHub Profile**](https://github.com/Ethan-da-Tech-Wizard) — Systems programming, deterministic verification, and agentic AI architectures.
 
 ---
