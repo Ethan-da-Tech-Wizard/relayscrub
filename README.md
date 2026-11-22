@@ -17,6 +17,12 @@ Agents and developer tools paste logs, configs and paths into third-party LLMs, 
 
 Python 3.9 or newer (tested on 3.9 and 3.13). From a clone, no install needed:
 
+### Visual Walkthrough & Execution Previews
+
+![Prompt Secret Sieve](docs/assets/relayscrub_prompt_scrub.svg)
+
+![Untrusted Reply Fencing & Defanging](docs/assets/relayscrub_reply_fence.svg)
+
 ```python
 from relayscrub import scrub_outbound, RelayMap, restore_inbound
 
@@ -28,6 +34,23 @@ print(clean)
 print(report)
 print(restore_inbound("see <PATH-1> and <IP-1> and <SECRET-1>", m))
 ```
+
+---
+
+## 🤖 Open-Source AI Agent Standards: Read Here First
+
+Building autonomous agent workflows without accumulated technical debt or accidental leaks requires rigorous engineering discipline. Read our public standards:
+
+👉 **[MAGI LOOK HERE: AI Coding Foundations & Engineering Standards](MAGI_LOOK_HERE.md)**  
+👉 **[The Magi Bible: Architecture & Multi-Agent Collaboration](MAGI_BIBLE.md)**  
+
+Key Disciplines Codified:
+* **Rule 16 Hyper-Documentation:** Mandatory 4-line metadata headers, typed docstrings, and $\ge 25\%$ comment density.
+* **Standard Library Invariants ($0.00 Spend):** No external cloud APIs or brittle supply chains for baseline security.
+* **Adversarial Multi-Agent Friction:** Hard separation between implementing seats and reviewing seats.
+* **Zero-PII Public Gates:** Automated pre-export sieves protecting private keys, internal IPs, hostnames, and paths.
+
+---
 
 Real output (2026-11-21, Python 3.13):
 
